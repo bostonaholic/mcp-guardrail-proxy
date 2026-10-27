@@ -87,6 +87,10 @@ fn main() -> ExitCode {
             "cli_exits_when_child_exits_with_stdin_open",
             cli_exits_when_child_exits_with_stdin_open(),
         ),
+        run_test(
+            "cli_denies_shadow_read_with_the_embedded_default_policy",
+            cli_denies_shadow_read_with_the_embedded_default_policy(),
+        ),
     ];
     if results.iter().all(|passed| *passed) {
         ExitCode::SUCCESS
@@ -619,4 +623,39 @@ async fn cli_exits_when_child_exits_with_stdin_open() {
         .expect("wait for the CLI");
     assert_eq!(status.code(), Some(3));
     drop(stdin);
+}
+
+/// With no `--policy`, the binary enforces the embedded default policy. The
+/// upstream is `cat`, so a forwarded frame would come back as a second line.
+async fn cli_denies_shadow_read_with_the_embedded_default_policy() {
+    let mut cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_mcp-guardrail-proxy"))
+        .args(["proxy", "--", "cat"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn the CLI binary");
+    let mut stdin = cli.stdin.take().expect("the CLI stdin is piped");
+    stdin
+        .write_all(SHADOW_READ.as_bytes())
+        .await
+        .expect("write the host frame");
+    stdin.write_all(b"\n").await.expect("write a newline");
+    drop(stdin);
+    let output = tokio::time::timeout(Duration::from_secs(3), cli.wait_with_output())
+        .await
+        .expect("the CLI exits within 3 s after host EOF")
+        .expect("wait for the CLI");
+    assert!(
+        output.status.success(),
+        "proxy exit status: {:?}",
+        output.status
+    );
+    let stdout = String::from_utf8(output.stdout).expect("the CLI stdout is UTF-8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "stdout: {stdout:?}");
+    let reply: Value = serde_json::from_str(lines[0]).expect("the reply is JSON");
+    assert_eq!(reply["id"], json!(1));
+    assert_eq!(reply["error"]["code"], json!(-32001));
 }

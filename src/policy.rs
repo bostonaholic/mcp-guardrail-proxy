@@ -20,6 +20,9 @@ const AUDIT_SINK_FAILURE_RULE_ID: &str = "audit-sink-failure";
 /// The reason reported when no rule applies.
 const NO_RULE_MATCHED_REASON: &str = "no rule matched";
 
+/// The text of `policies/default-policy.toml`, compiled into the binary.
+const EMBEDDED_DEFAULT_POLICY: &str = include_str!("../policies/default-policy.toml");
+
 /// A parsed policy file, before its regexes are compiled.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -216,6 +219,11 @@ impl PolicyEngine {
     /// Loads the policy that `provider` supplies.
     pub fn from_provider(provider: &dyn PolicyProvider) -> Result<Self, PolicyError> {
         Self::from_toml(&provider.policy_source()?)
+    }
+
+    /// Loads the default policy compiled into the binary from `policies/default-policy.toml`.
+    pub fn embedded_default() -> Result<Self, PolicyError> {
+        Self::from_toml(EMBEDDED_DEFAULT_POLICY)
     }
 
     /// The number of rules.
@@ -835,6 +843,14 @@ mod tests {
             assert_eq!(evaluation.decision, decision, "{command}");
             assert_eq!(evaluation.rule_id, rule_id, "{command}");
         }
+    }
+
+    #[test]
+    fn embedded_default_matches_the_policy_file_on_disk() {
+        let embedded = PolicyEngine::embedded_default().expect("the embedded default policy loads");
+        let on_disk = default_engine();
+        assert_eq!(embedded.rule_count(), on_disk.rule_count());
+        assert_eq!(embedded.taint_source_count(), on_disk.taint_source_count());
     }
 
     #[test]

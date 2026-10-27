@@ -2,13 +2,13 @@
 
 #![forbid(unsafe_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use mcp_guardrail_proxy::control_plane::{AuditSink, PendingApprovalBroker};
-use mcp_guardrail_proxy::policy::PolicyEngine;
+use mcp_guardrail_proxy::policy::{PolicyEngine, PolicyError};
 use mcp_guardrail_proxy::proxy::{ProxyConfig, ProxyError, run_stdio_proxy};
 use mcp_guardrail_proxy::replay::{ReplayCorpus, run_replay};
 use mcp_guardrail_proxy::telemetry::{JsonlAuditSink, SharedLineWriter};
@@ -25,9 +25,9 @@ struct Cli {
 enum Command {
     /// Sit between an MCP host (stdin, stdout) and an upstream server, enforcing the policy.
     Proxy {
-        /// The policy file.
+        /// The policy file; without it, the embedded default policy applies.
         #[arg(long)]
-        policy: PathBuf,
+        policy: Option<PathBuf>,
         /// Append audit lines here instead of writing them to stderr.
         #[arg(long)]
         audit_log: Option<PathBuf>,
@@ -40,18 +40,18 @@ enum Command {
     },
     /// Replay a corpus of host frames against a policy and report the outcome.
     Replay {
-        /// The policy file.
+        /// The policy file; without it, the embedded default policy applies.
         #[arg(long)]
-        policy: PathBuf,
+        policy: Option<PathBuf>,
         /// The corpus file.
         #[arg(long)]
         corpus: PathBuf,
     },
-    /// Check that a policy file loads.
+    /// Check that a policy loads.
     CheckPolicy {
-        /// The policy file.
+        /// The policy file; without it, the embedded default policy applies.
         #[arg(long)]
-        policy: PathBuf,
+        policy: Option<PathBuf>,
     },
 }
 
@@ -70,19 +70,32 @@ fn main() -> ExitCode {
             audit_log,
             session_id,
             upstream,
-        } => run_proxy(&policy, audit_log.as_deref(), session_id, upstream),
-        Command::Replay { policy, corpus } => run_replay_command(&policy, &corpus),
-        Command::CheckPolicy { policy } => run_check_policy(&policy),
+        } => run_proxy(
+            policy.as_deref(),
+            audit_log.as_deref(),
+            session_id,
+            upstream,
+        ),
+        Command::Replay { policy, corpus } => run_replay_command(policy.as_deref(), &corpus),
+        Command::CheckPolicy { policy } => run_check_policy(policy.as_deref()),
+    }
+}
+
+/// The engine for the file at `policy`, or the embedded default when there is no path.
+fn load_engine(policy: Option<&Path>) -> Result<PolicyEngine, PolicyError> {
+    match policy {
+        Some(path) => PolicyEngine::from_path(path),
+        None => PolicyEngine::embedded_default(),
     }
 }
 
 fn run_proxy(
-    policy: &std::path::Path,
+    policy: Option<&Path>,
     audit_log: Option<&std::path::Path>,
     session_id: String,
     upstream_command: Vec<String>,
 ) -> ExitCode {
-    let engine = match PolicyEngine::from_path(policy) {
+    let engine = match load_engine(policy) {
         Ok(engine) => engine,
         Err(error) => {
             eprintln!("mcp-guardrail-proxy: policy error: {error}");
@@ -140,8 +153,8 @@ fn exit_code(code: Option<i32>) -> ExitCode {
     ExitCode::from(code)
 }
 
-fn run_replay_command(policy: &std::path::Path, corpus: &std::path::Path) -> ExitCode {
-    let engine = match PolicyEngine::from_path(policy) {
+fn run_replay_command(policy: Option<&Path>, corpus: &std::path::Path) -> ExitCode {
+    let engine = match load_engine(policy) {
         Ok(engine) => engine,
         Err(error) => {
             eprintln!("mcp-guardrail-proxy: policy error: {error}");
@@ -164,12 +177,15 @@ fn run_replay_command(policy: &std::path::Path, corpus: &std::path::Path) -> Exi
     }
 }
 
-fn run_check_policy(policy: &std::path::Path) -> ExitCode {
-    match PolicyEngine::from_path(policy) {
+fn run_check_policy(policy: Option<&Path>) -> ExitCode {
+    match load_engine(policy) {
         Ok(engine) => {
+            let source = match policy {
+                Some(path) => path.display().to_string(),
+                None => "embedded default".to_string(),
+            };
             println!(
-                "policy OK: {}: {} rules, {} taint sources",
-                policy.display(),
+                "policy OK: {source}: {} rules, {} taint sources",
                 engine.rule_count(),
                 engine.taint_source_count()
             );
