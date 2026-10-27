@@ -1,0 +1,4 @@
+/target/
+/.tla-cache/
+/docs/plans/
+/.claude/worktrees/
