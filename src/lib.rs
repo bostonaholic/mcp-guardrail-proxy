@@ -6,5 +6,6 @@ pub mod control_plane;
 pub mod policy;
 pub mod protocol;
 pub mod proxy;
+pub mod replay;
 pub mod taint;
 pub mod telemetry;

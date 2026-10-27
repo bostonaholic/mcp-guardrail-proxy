@@ -83,6 +83,10 @@ fn main() -> ExitCode {
             "child_exit_with_open_descendant_pipe_returns_after_drain_grace",
             child_exit_with_open_descendant_pipe_returns_after_drain_grace(),
         ),
+        run_test(
+            "cli_exits_when_child_exits_with_stdin_open",
+            cli_exits_when_child_exits_with_stdin_open(),
+        ),
     ];
     if results.iter().all(|passed| *passed) {
         ExitCode::SUCCESS
@@ -586,4 +590,33 @@ async fn child_exit_with_open_descendant_pipe_returns_after_drain_grace() {
         "proxy stderr: {:?}",
         stderr.text()
     );
+}
+
+async fn cli_exits_when_child_exits_with_stdin_open() {
+    let mut cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_mcp-guardrail-proxy"))
+        .args([
+            "proxy",
+            "--policy",
+            DEFAULT_POLICY,
+            "--",
+            "env",
+            "MCP_GUARDRAIL_MOCK_UPSTREAM=1",
+            "MCP_GUARDRAIL_MOCK_EXIT_CODE=3",
+        ])
+        .arg(std::env::current_exe().expect("the test binary path"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn the CLI binary");
+    // `Child::wait` drops a stdin handle still held in the `Child`, which
+    // would give the CLI host EOF. Holding it here keeps host input open.
+    let stdin = cli.stdin.take().expect("the CLI stdin is piped");
+    let status = tokio::time::timeout(Duration::from_secs(3), cli.wait())
+        .await
+        .expect("the CLI exits within 3 s while its stdin stays open")
+        .expect("wait for the CLI");
+    assert_eq!(status.code(), Some(3));
+    drop(stdin);
 }
