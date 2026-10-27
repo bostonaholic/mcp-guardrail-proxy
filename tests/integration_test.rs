@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use mcp_guardrail_proxy::control_plane::PendingApprovalBroker;
 use mcp_guardrail_proxy::policy::PolicyEngine;
-use mcp_guardrail_proxy::proxy::{ProxyConfig, ProxyError, run_proxy_with_io};
+use mcp_guardrail_proxy::proxy::{MAX_FRAME_BYTES, ProxyConfig, ProxyError, run_proxy_with_io};
 use mcp_guardrail_proxy::telemetry::{JsonlAuditSink, SharedLineWriter};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -492,7 +492,7 @@ async fn audit_line_precedes_reply_and_redacts_secrets() {
 
 async fn malformed_frames_get_errors_and_session_continues() {
     let dir = TempDir::new().expect("create a temp dir");
-    let oversize_frame = vec![b'a'; 16 * 1024 * 1024 + 1];
+    let oversize_frame = vec![b'a'; MAX_FRAME_BYTES + 1];
     let (status, replies) = run_session(
         proxy_config(dir.path(), &[], &SharedBuffer::default()),
         vec![
@@ -513,7 +513,7 @@ async fn malformed_frames_get_errors_and_session_continues() {
     assert_eq!(replies[2]["id"], Value::Null);
     assert_eq!(
         replies[2]["error"]["data"]["detail"],
-        "frame exceeds 16777216 bytes"
+        format!("frame exceeds {MAX_FRAME_BYTES} bytes")
     );
     assert_eq!(replies[3]["id"], 4);
     assert_eq!(

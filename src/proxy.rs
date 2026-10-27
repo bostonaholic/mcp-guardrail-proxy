@@ -25,7 +25,7 @@ use crate::telemetry::{
 };
 
 /// The longest host frame or child stdout line, excluding its `\n`; longer lines get `-32600`.
-pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 /// The longest child stderr line relayed whole; longer lines are split into lines of this size.
 pub const MAX_STDERR_LINE_BYTES: usize = 64 * 1024;
 /// How long the relays may keep reading child output after the child exits.

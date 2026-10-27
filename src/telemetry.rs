@@ -72,9 +72,18 @@ fn secret_patterns() -> &'static [SecretPattern] {
                 r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(-----END [A-Z0-9 ]*PRIVATE KEY-----|$)",
             ),
             ("bearer-token", r"(?i)\bbearer\s+[A-Za-z0-9\-._~+/]+=*"),
-            ("github-token", r"\bghp_[A-Za-z0-9]{36}\b"),
-            ("aws-access-key-id", r"\bAKIA[0-9A-Z]{16}\b"),
-            ("sk-api-key", r"\bsk-[A-Za-z0-9_\-]{16,}"),
+            (
+                "github-token",
+                r"(?P<prefix>^|[^A-Za-z0-9]|%[0-9A-Fa-f]{2})ghp_[A-Za-z0-9]{36}\b",
+            ),
+            (
+                "aws-access-key-id",
+                r"(?P<prefix>^|[^A-Za-z0-9]|%[0-9A-Fa-f]{2})AKIA[0-9A-Z]{16}\b",
+            ),
+            (
+                "sk-api-key",
+                r"(?P<prefix>^|[^A-Za-z0-9]|%[0-9A-Fa-f]{2})sk-[A-Za-z0-9_\-]{16,}",
+            ),
         ];
         sources
             .into_iter()
@@ -86,14 +95,15 @@ fn secret_patterns() -> &'static [SecretPattern] {
     })
 }
 
-/// Replaces each secret in `text` with `[REDACTED:<kind>]`.
+/// Replaces each secret in `text` with `[REDACTED:<kind>]`. A pattern's `prefix` group, the
+/// non-alphanumeric character or percent-encoded byte before a token, stays in the output.
 pub fn redact_secrets(text: &str) -> String {
     let mut redacted = text.to_string();
     for pattern in secret_patterns() {
-        let token = format!("[REDACTED:{}]", pattern.kind);
+        let replacement = format!("${{prefix}}[REDACTED:{}]", pattern.kind);
         redacted = pattern
             .regex
-            .replace_all(&redacted, regex::NoExpand(&token))
+            .replace_all(&redacted, replacement.as_str())
             .into_owned();
     }
     redacted
@@ -401,8 +411,8 @@ mod tests {
         assert_eq!(parsed["sequence"], 2);
     }
 
-    /// One row per secret kind, plus a PEM block with no `END` line.
-    const SECRET_ROWS: [(&str, &str); 6] = [
+    /// One row per secret kind, a PEM block with no `END` line, and a percent-encoded token.
+    const SECRET_ROWS: [(&str, &str); 8] = [
         (
             "key -----BEGIN RSA PRIVATE KEY-----\nMIIBreplayFAKEkeyMATERIAL\n-----END RSA PRIVATE KEY----- end",
             "key [REDACTED:pem-private-key] end",
@@ -426,6 +436,14 @@ mod tests {
         (
             "openai sk-proj-REPLAYfakeKEY0123456789abcdef",
             "openai [REDACTED:sk-api-key]",
+        ),
+        (
+            "url https://x.example/?token%3Dghp_REPLAYfake0123456789abcdefghijklmnop end",
+            "url https://x.example/?token%3D[REDACTED:github-token] end",
+        ),
+        (
+            "GITHUB_TOKEN_ghp_REPLAYfake0123456789abcdefghijklmnop",
+            "GITHUB_TOKEN_[REDACTED:github-token]",
         ),
     ];
 

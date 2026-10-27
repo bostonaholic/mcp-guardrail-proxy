@@ -13,11 +13,11 @@ metadata:
 
 Use this skill after you edit any tracked file under `src`, `specs`, `tests`, `scripts`, `policies`, or `fixtures`. Use it also after you edit `Cargo.toml` or `Cargo.lock`.
 
-The sync check in section 2 does not see `Cargo.toml` or `Cargo.lock`. After an edit to either file, run section 3 anyway.
+The sync check under "Check sync status" does not see `Cargo.toml` or `Cargo.lock`. After an edit to either file, run the commands under "Run both verification paths" anyway.
 
 ## Check sync status
 
-The sync commit is the last commit on whose tree every verification command in section 3 passed.
+The sync commit is the last commit on whose tree every command under "Run both verification paths" passed.
 
 Run this command from the repository root:
 
@@ -25,7 +25,7 @@ Run this command from the repository root:
 git diff --quiet fbc720c67ab6a82ea382ee0101648bf4f80a2d5f -- src specs tests scripts policies fixtures
 ```
 
-Replace the hash with the value of `metadata.sync-commit` if it has moved. Exit 0 means the verified paths match the sync commit. A non-zero exit means they changed, so run section 3.
+Replace the hash with the value of `metadata.sync-commit` if it has moved. Exit 0 means the verified paths match the sync commit. A non-zero exit means they changed, so run the commands under "Run both verification paths".
 
 The command compares the working tree, so it also sees edits that are not committed. It skips untracked files. Run `git add` on a new file before the check.
 
@@ -111,7 +111,7 @@ State 2: <Action line ...>
 ...
 ```
 
-Each `State <n>` block lists the value of every variable after one action. To find the code behind an action, use the spec-to-code map in section 6 below.
+Each `State <n>` block lists the value of every variable after one action. To find the code behind an action, use the "Spec-to-code map" below.
 
 If `/statechart` exists in your environment, feed it the trace to draw the phase diagram. If it does not, draw the five phases by hand: Idle, Received, Evaluated, Audited, Done.
 
@@ -124,7 +124,7 @@ Do these steps in order. Do not skip step 1, because step 4 discards uncommitted
 3. Run `cargo test`. See `implementation_matches_spec_model_to_depth_5` fail on `NoUnapprovedTaintedSinkForwarded` with a 2-input trace. The trace is `UntrustedSource`, then `PrivilegedSink` without override. The iterative-deepening search reports the shortest trace first.
 4. Run `git restore src/taint.rs`. Step 1 committed your change, so this command removes only the break.
 5. Run `cargo test` and see it pass.
-6. Only after every section 3 command passes on the commit from step 1, set `metadata.sync-commit` to that commit's hash in a follow-up commit.
+6. Only after every command under "Run both verification paths" passes on the commit from step 1, set `metadata.sync-commit` to that commit's hash in a follow-up commit.
 
 ## Spec-to-code map
 

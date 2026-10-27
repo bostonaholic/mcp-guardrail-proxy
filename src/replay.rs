@@ -332,9 +332,11 @@ fn decision_name(decision: Decision) -> &'static str {
 }
 
 impl ReplayReport {
-    /// True when every step matched, nothing slipped through, and evaluation stayed in budget.
+    /// True when the corpus had steps, every step matched, nothing slipped through, and
+    /// evaluation stayed in budget. An empty corpus fails, so a truncated file cannot pass.
     pub fn passed(&self) -> bool {
-        self.steps_matched == self.steps_total
+        self.steps_total > 0
+            && self.steps_matched == self.steps_total
             && self.false_negatives == 0
             && self.exfiltration_false_negatives == 0
             && self.max_latency_us < LATENCY_BUDGET_US
@@ -427,6 +429,16 @@ mod tests {
         assert_eq!(report.exfiltration_false_negatives, 0);
         assert_eq!(report.exfiltration_steps, 7);
         assert_eq!(report.true_positives, 15);
+    }
+
+    #[test]
+    fn empty_corpus_does_not_pass() {
+        let corpus = ReplayCorpus {
+            scenarios: Vec::new(),
+        };
+        let report = run_replay(&default_engine(), &corpus);
+        assert_eq!(report.steps_total, 0);
+        assert!(!report.passed(), "an empty corpus must not pass");
     }
 
     #[test]
