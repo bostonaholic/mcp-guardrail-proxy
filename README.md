@@ -6,11 +6,67 @@ Taint means the session has read untrusted content, such as a web page or an ema
 
 ## Install
 
-```sh
-cargo install --path .
+Ask your agent:
+
+```text
+Install https://github.com/bostonaholic/mcp-guardrail-proxy and obey the Install section of its README.
 ```
 
-The crate is not on crates.io yet.
+The agent builds the binary, saves the default policy, tests both, and asks you before it edits your MCP client config. You can also do the steps yourself.
+
+### Steps
+
+Agents: do the steps in order. If a step fails, stop. Show the user the command and its full output. Do not guess a fix.
+
+You need macOS or Linux, a POSIX shell, `curl`, and Rust 1.85 or later.
+
+1. Run `cargo --version`. If `cargo` is absent, stop and tell the user to install Rust from <https://rustup.rs>. If the version is below 1.85, stop and tell the user to run `rustup update`.
+
+2. Install the binary. The crate is not on crates.io, so cargo builds it from GitHub. The build takes several minutes, so give the command a timeout of at least 10 minutes.
+
+   ```sh
+   cargo install --git https://github.com/bostonaholic/mcp-guardrail-proxy --locked
+   ```
+
+3. Save the default policy. The binary does not contain a policy, and every command needs `--policy`. The block keeps an existing file, because the user may have edited it.
+
+   ```sh
+   POLICY="$HOME/.config/mcp-guardrail-proxy/default-policy.toml"
+   [ -e "$POLICY" ] || { mkdir -p "$(dirname "$POLICY")" && curl -fsSL -o "$POLICY" \
+     https://raw.githubusercontent.com/bostonaholic/mcp-guardrail-proxy/main/policies/default-policy.toml; }
+   ```
+
+4. Test the binary and the policy. Run this block in one shell.
+
+   ```sh
+   BIN="$(command -v mcp-guardrail-proxy || echo "${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin/mcp-guardrail-proxy")"
+   POLICY="$HOME/.config/mcp-guardrail-proxy/default-policy.toml"
+   printf '%s\n' "$BIN" "$POLICY"
+   "$BIN" check-policy --policy "$POLICY"
+   echo '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/etc/shadow"}}}' \
+     | "$BIN" proxy --policy "$POLICY" -- cat
+   ```
+
+   Expect the two full paths, then a line that starts with `policy OK:`. The last command sends a call that reads `/etc/shadow` through the proxy to `cat`. Expect exactly one line on stdout, the reply, which holds `"code":-32001`. `cat` echoes what it receives, so a second stdout line means the call leaked. The audit line on stderr holds `"decision":"deny"`.
+
+5. Wire one MCP server. Ask the user which client to edit and which server entry in its config to guard. If you do not know where that client keeps its config, ask the user for the file path. The proxy wraps only stdio servers, so if the entry has a `url` and no `command`, stop and tell the user. Show the user the new entry and wait for a yes. Copy the config file to a backup, then change the entry:
+
+   ```json
+   "<name>": {
+     "command": "<BIN>",
+     "args": ["proxy", "--policy", "<POLICY>", "--", "<old command>", "<old args...>"]
+   }
+   ```
+
+   Use the two full paths from step 4. JSON does not expand `~` or `$HOME`, and GUI clients such as Claude Desktop often do not have `~/.cargo/bin` on their `PATH`. Put the old `command` and all of the old `args` after `"--"`. If the old entry has no `args`, end the list at `<old command>`.
+
+   Keep the entry name and all other keys, such as `env`. For a TOML config, set the same `command` and `args` keys in the table of that server. The upstream server gets the environment of the proxy.
+
+6. Tell the user to restart the client. The guarded server must list the same tools as before. If it does not, run `"<BIN>" check-policy --policy "<POLICY>"` with the values from the entry. Then run the full `command` and `args` of the entry in a shell with `< /dev/null`. Show the user both outputs. A line that starts with `mcp-guardrail-proxy:` names the failure. To undo the change, copy the backup over the config file.
+
+To write audit lines to a file, create its directory, then add `"--audit-log"` and the full file path to `args` before `"--"`. See [Audit log](#audit-log).
+
+From a clone, run `cargo install --path . --locked` in place of step 2, and copy `policies/default-policy.toml` to `$HOME/.config/mcp-guardrail-proxy/` in place of step 3.
 
 ## Quick start
 
@@ -294,7 +350,7 @@ Cursor, in `mcp.json`:
 {
   "mcpServers": {
     "guarded": {
-      "command": "mcp-guardrail-proxy",
+      "command": "/abs/path/mcp-guardrail-proxy",
       "args": ["proxy", "--policy", "/abs/path/default-policy.toml", "--", "<upstream-command>", "<arg>"]
     }
   }
@@ -307,7 +363,7 @@ Claude Desktop, in `claude_desktop_config.json`:
 {
   "mcpServers": {
     "guarded": {
-      "command": "mcp-guardrail-proxy",
+      "command": "/abs/path/mcp-guardrail-proxy",
       "args": ["proxy", "--policy", "/abs/path/default-policy.toml", "--", "<upstream-command>", "<arg>"]
     }
   }
@@ -320,7 +376,7 @@ Grok Bot should take the same `mcpServers` shape, but nobody has tested its form
 {
   "mcpServers": {
     "guarded": {
-      "command": "mcp-guardrail-proxy",
+      "command": "/abs/path/mcp-guardrail-proxy",
       "args": ["proxy", "--policy", "/abs/path/default-policy.toml", "--", "<upstream-command>", "<arg>"]
     }
   }
