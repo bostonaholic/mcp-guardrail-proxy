@@ -1,0 +1,170 @@
+# Default guardrail policy. Regexes are unanchored searches over the tool name
+# and the joined string arguments; rules apply in file order, and the first
+# applicable rule with the highest-priority decision wins.
+
+# Taint sources: a forwarded call to one of these taints the session.
+
+[[taint_sources]]
+id = "untrusted-web-fetch"
+description = "Fetching a web page returns content from an untrusted origin"
+tool_regex = '(?i)^(webfetch|web_fetch|fetch|fetch_url|http_get|http_request|curl|wget|browser_navigate|navigate)$'
+
+[[taint_sources]]
+id = "untrusted-email-read"
+description = "Reading email returns content written by third parties"
+tool_regex = '(?i)^read_email'
+
+[[taint_sources]]
+id = "untrusted-github-issue"
+description = "Reading an issue returns content written by third parties"
+tool_regex = '(?i)^(github_)?get_issue'
+
+[[taint_sources]]
+id = "untrusted-external-resource"
+description = "Reading a resource from an http(s) URI returns content from an untrusted origin"
+tool_regex = '^resources/read$'
+arg_regexes = ['(?i)^https?://']
+
+# Rules: 1 to 6 deny sensitive arguments in any session, 7 to 15 apply only
+# once the session is tainted.
+
+[[rules]]
+id = "deny-system-credential-files"
+description = "Reading system credential files is never allowed"
+tool_regex = '.*'
+when_tainted = false
+arg_regexes = ['(?i)/etc/+(shadow|passwd)\b']
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "deny-ssh-key-material"
+description = "Touching SSH key material is never allowed"
+tool_regex = '.*'
+when_tainted = false
+arg_regexes = ['''(?mi)\.ssh([/\\]|[\s"';|&)]|$)''']
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "deny-aws-credentials"
+description = "Reading AWS credential files is never allowed"
+tool_regex = '.*'
+when_tainted = false
+arg_regexes = ['(?i)\.aws[/\\]+credentials\b']
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "deny-dotenv-files"
+description = "Reading dotenv files that hold secrets is never allowed"
+tool_regex = '.*'
+when_tainted = false
+arg_regexes = ['''(?mi)(^|[\s/\\="'(;|&])\.env(\.[A-Za-z0-9_-]+)?([\s"');|&]|$)''']
+decision = "deny"
+severity = "high"
+
+[[rules]]
+id = "deny-destructive-shell"
+description = "Destructive shell commands are never allowed"
+tool_regex = '(?i)^(shell|bash|sh|zsh|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
+when_tainted = false
+arg_regexes = [
+    '(?i)\brm\s+-[a-z]*(rf|fr)',
+    '(?i)\brm\s+(-r\s+-f|-f\s+-r)\b',
+    '\bmkfs(\.\w+)?\b',
+    '\bdd\s+if=',
+    ':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:',
+]
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "deny-env-dump"
+description = "Dumping the process environment can leak secrets"
+tool_regex = '(?i)^(shell|bash|sh|zsh|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
+when_tainted = false
+arg_regexes = [
+    '(?m)(^|[\s;|&(`])printenv\b',
+    '(?m)(^|[\s;|&(`])env\s*($|[|>;&)])',
+    '/proc/(self|\d+)/environ',
+]
+decision = "deny"
+severity = "high"
+
+[[rules]]
+id = "tainted-deny-shell-exec"
+description = "Shell execution is blocked after the session read untrusted content"
+tool_regex = '(?i)^(shell|bash|sh|zsh|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
+when_tainted = true
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "tainted-deny-outbound-messaging"
+description = "Sending chat messages is blocked after the session read untrusted content"
+tool_regex = '(?i)((slack|discord|telegram)_\w*(post|send|reply)|send_message|post_message)'
+when_tainted = true
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "tainted-deny-outbound-email"
+description = "Sending email is blocked after the session read untrusted content"
+tool_regex = '(?i)(send_email|send_mail|gmail_send|reply_email|reply_to_email|forward_email)'
+when_tainted = true
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "tainted-deny-webhook"
+description = "Calling webhooks or posting HTTP requests is blocked after the session read untrusted content"
+tool_regex = '(?i)(webhook|http_post|post_request)'
+when_tainted = true
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "tainted-deny-http-write-method"
+description = "A fetch tool with a POST, PUT, PATCH, or DELETE method can carry data out, so it is blocked after the session read untrusted content"
+tool_regex = '(?i)^(webfetch|web_fetch|fetch|fetch_url|http_get|http_request|curl|wget|browser_navigate|navigate)$'
+when_tainted = true
+arg_regexes = ['(?mi)^[ \t]*(post|put|patch|delete)[ \t]*$']
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "tainted-deny-file-upload"
+description = "Uploading or sharing files is blocked after the session read untrusted content"
+tool_regex = '(?i)(upload|put_object|create_gist|share_file)'
+when_tainted = true
+decision = "deny"
+severity = "critical"
+
+[[rules]]
+id = "tainted-deny-url-query-payload"
+description = "A URL with a query string can carry data out, so it is blocked after the session read untrusted content"
+tool_regex = '(?i)^(webfetch|web_fetch|fetch|fetch_url|http_get|http_request|curl|wget|browser_navigate|navigate)$|^resources/read$'
+when_tainted = true
+arg_regexes = [
+    '(?i)https?://[^\s?#]+\?[^\s#]+',
+    '(?mi)^[ \t]*(localhost|[a-z0-9-]+(\.[a-z0-9-]+)+)(:\d+)?(/[^\s?#]*)?\?[^\s#]+',
+]
+decision = "deny"
+severity = "high"
+
+[[rules]]
+id = "tainted-approve-workspace-write"
+description = "Changing workspace files needs approval after the session read untrusted content"
+tool_regex = '(?i)^(write_file|edit_file|create_file|apply_patch|str_replace_editor|move_file|delete_file)$'
+when_tainted = true
+decision = "require-approval"
+severity = "medium"
+
+[[rules]]
+id = "tainted-approve-pr-creation"
+description = "Creating or merging pull requests needs approval after the session read untrusted content"
+tool_regex = '(?i)^(create_pull_request|create_pr|merge_pull_request)$'
+when_tainted = true
+decision = "require-approval"
+severity = "high"

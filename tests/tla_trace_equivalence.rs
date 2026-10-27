@@ -525,3 +525,516 @@ fn broken_spec_model_violates_no_unapproved_tainted_sink_forwarded() {
 }
 
 // Part 2 (crate-dependent equivalence tests) lands in commit 3.
+//
+// Part 2 drives the real `SessionTaintState` and the spec model above with
+// the same inputs. An iterative-deepening search feeds every input sequence of
+// length 1 to 5 to both. After each input it first checks the four invariants
+// on the crate's outcome, then compares that outcome with `SpecModel`.
+
+use mcp_guardrail_proxy::protocol::Decision as CrateDecision;
+use mcp_guardrail_proxy::taint::{
+    AbstractCall, ArgSensitivity, SessionTaintState, SourceCategory, StepOutcome, TaintEvent,
+    TaintLevel as CrateTaintLevel,
+};
+
+/// The longest input sequence the search explores.
+const MAX_INPUTS: usize = 5;
+
+/// One search input: a call (one `Receive` to `Complete` cycle of the spec)
+/// or an explicit taint `Reset`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Input {
+    Call(Call),
+    Reset,
+}
+
+impl fmt::Display for Input {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Input::Call(call) => write!(f, "{}", Action::Receive(*call)),
+            Input::Reset => write!(f, "Reset"),
+        }
+    }
+}
+
+fn source_category(class: ToolClass) -> SourceCategory {
+    match class {
+        ToolClass::Benign => SourceCategory::Benign,
+        ToolClass::UntrustedSource => SourceCategory::UntrustedSource,
+        ToolClass::PrivilegedSink => SourceCategory::PrivilegedSink,
+    }
+}
+
+fn arg_sensitivity(sens: ArgSens) -> ArgSensitivity {
+    match sens {
+        ArgSens::Safe => ArgSensitivity::Safe,
+        ArgSens::Sensitive => ArgSensitivity::Sensitive,
+    }
+}
+
+/// A fixed tool name per class, so the audit entry's name can be checked.
+fn tool_name(class: ToolClass) -> &'static str {
+    match class {
+        ToolClass::Benign => "search_files",
+        ToolClass::UntrustedSource => "WebFetch",
+        ToolClass::PrivilegedSink => "Shell",
+    }
+}
+
+fn abstract_call(call: Call) -> AbstractCall {
+    AbstractCall {
+        tool_name: tool_name(call.tool_class).to_string(),
+        category: source_category(call.tool_class),
+        sensitivity: arg_sensitivity(call.arg_sens),
+        override_allowed: call.override_allowed,
+    }
+}
+
+fn spec_tool_class(category: SourceCategory) -> ToolClass {
+    match category {
+        SourceCategory::Benign => ToolClass::Benign,
+        SourceCategory::UntrustedSource => ToolClass::UntrustedSource,
+        SourceCategory::PrivilegedSink => ToolClass::PrivilegedSink,
+    }
+}
+
+fn spec_arg_sens(sensitivity: ArgSensitivity) -> ArgSens {
+    match sensitivity {
+        ArgSensitivity::Safe => ArgSens::Safe,
+        ArgSensitivity::Sensitive => ArgSens::Sensitive,
+    }
+}
+
+fn spec_taint(level: CrateTaintLevel) -> TaintLevel {
+    match level {
+        CrateTaintLevel::Clean => TaintLevel::Clean,
+        CrateTaintLevel::Tainted => TaintLevel::Tainted,
+    }
+}
+
+fn spec_decision(decision: &CrateDecision) -> Decision {
+    match decision {
+        CrateDecision::Allow => Decision::Allow,
+        CrateDecision::Deny => Decision::Deny,
+        CrateDecision::RequireApproval => Decision::RequireApproval,
+    }
+}
+
+/// The taint state machine under test: the real `SessionTaintState` or a mutant.
+trait TaintMachine {
+    fn fresh() -> Self;
+    fn apply_call(&mut self, call: &AbstractCall) -> StepOutcome;
+    fn apply_reset(&mut self);
+    fn taint_level(&self) -> CrateTaintLevel;
+    fn taint_history(&self) -> &[TaintEvent];
+}
+
+impl TaintMachine for SessionTaintState {
+    fn fresh() -> Self {
+        SessionTaintState::new()
+    }
+
+    fn apply_call(&mut self, call: &AbstractCall) -> StepOutcome {
+        self.step(call)
+    }
+
+    fn apply_reset(&mut self) {
+        self.reset();
+    }
+
+    fn taint_level(&self) -> CrateTaintLevel {
+        self.level()
+    }
+
+    fn taint_history(&self) -> &[TaintEvent] {
+        self.history()
+    }
+}
+
+/// `SessionTaintState` with the ordering bug of `McpGuardrailTaintBroken`:
+/// a `PrivilegedSink` call with `Safe` arguments goes to the child without
+/// the taint check.
+struct MutantForwardsSinkBeforeTaintCheck {
+    inner: SessionTaintState,
+}
+
+impl TaintMachine for MutantForwardsSinkBeforeTaintCheck {
+    fn fresh() -> Self {
+        MutantForwardsSinkBeforeTaintCheck {
+            inner: SessionTaintState::new(),
+        }
+    }
+
+    fn apply_call(&mut self, call: &AbstractCall) -> StepOutcome {
+        let mut outcome = self.inner.step(call);
+        let safe_sink = call.category == SourceCategory::PrivilegedSink
+            && call.sensitivity == ArgSensitivity::Safe;
+        if safe_sink {
+            outcome.decision = CrateDecision::Allow;
+            outcome.audit.decision = CrateDecision::Allow;
+            outcome.forwarded = true;
+        }
+        outcome
+    }
+
+    fn apply_reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn taint_level(&self) -> CrateTaintLevel {
+        self.inner.level()
+    }
+
+    fn taint_history(&self) -> &[TaintEvent] {
+        self.inner.history()
+    }
+}
+
+/// The spec's run of one input from an `Idle` state.
+struct SpecRun {
+    /// The `Done` state of a call, where its decision and forward show.
+    /// `None` for `Reset`, which has no call.
+    done: Option<SpecState>,
+    /// The next `Idle` state.
+    idle: SpecState,
+}
+
+/// The successor of a call phase after `Receive`, where exactly one action
+/// is enabled.
+fn only_successor(model: &SpecModel, s: &SpecState) -> SpecState {
+    let mut successors = model.next(s);
+    assert_eq!(
+        successors.len(),
+        1,
+        "exactly one action is enabled in phase {:?}",
+        s.phase
+    );
+    successors.remove(0).1
+}
+
+/// Every input that the spec enables in an `Idle` state, in `Next` order,
+/// with its run. `Reset` appears only when the spec enables it.
+fn spec_inputs(model: &SpecModel, idle: &SpecState) -> Vec<(Input, SpecRun)> {
+    model
+        .next(idle)
+        .into_iter()
+        .map(|(action, next)| match action {
+            Action::Receive(call) => {
+                let evaluated = only_successor(model, &next);
+                let audited = only_successor(model, &evaluated);
+                let done = only_successor(model, &audited);
+                let idle = only_successor(model, &done);
+                (
+                    Input::Call(call),
+                    SpecRun {
+                        done: Some(done),
+                        idle,
+                    },
+                )
+            }
+            Action::Reset => (
+                Input::Reset,
+                SpecRun {
+                    done: None,
+                    idle: next,
+                },
+            ),
+            other => panic!("{other} is not enabled in an Idle state"),
+        })
+        .collect()
+}
+
+fn apply<M: TaintMachine>(machine: &mut M, input: Input) -> Option<StepOutcome> {
+    match input {
+        Input::Call(call) => Some(machine.apply_call(&abstract_call(call))),
+        Input::Reset => {
+            machine.apply_reset();
+            None
+        }
+    }
+}
+
+/// What the machine under test shows around the last input of a sequence.
+struct Observed {
+    level_before: CrateTaintLevel,
+    level_after: CrateTaintLevel,
+    history_before: usize,
+    history_after: usize,
+    history_ends_with_reset: bool,
+    outcome: Option<StepOutcome>,
+}
+
+impl fmt::Display for Observed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "taint {:?} -> {:?}, history length {} -> {}",
+            self.level_before, self.level_after, self.history_before, self.history_after
+        )?;
+        if let Some(outcome) = &self.outcome {
+            write!(
+                f,
+                ", decision {:?}, forwarded {}, audit entry {{ sequence {}, tool {}, taint_at_evaluation {:?}, decision {:?} }}",
+                outcome.decision,
+                outcome.forwarded,
+                outcome.audit.sequence,
+                outcome.audit.tool_name,
+                outcome.audit.taint_at_evaluation,
+                outcome.audit.decision
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Runs `inputs` on a fresh machine and observes the last input.
+fn observe_last<M: TaintMachine>(inputs: &[Input]) -> Observed {
+    let (last, prefix) = inputs
+        .split_last()
+        .expect("a sequence has at least one input");
+    let mut machine = M::fresh();
+    for input in prefix {
+        apply(&mut machine, *input);
+    }
+    let level_before = machine.taint_level();
+    let history_before = machine.taint_history().len();
+    let outcome = apply(&mut machine, *last);
+    let history = machine.taint_history();
+    Observed {
+        level_before,
+        level_after: machine.taint_level(),
+        history_before,
+        history_after: history.len(),
+        history_ends_with_reset: matches!(history.last(), Some(TaintEvent::Reset { .. })),
+        outcome,
+    }
+}
+
+/// The first invariant that the observed outcome breaks: the four spec
+/// invariants in cfg order, then `MonotonicTaintStep`. One `step` covers a
+/// whole call, so the state invariants are read at the call's `Done` state.
+fn broken_invariant(input: Input, seen: &Observed) -> Option<&'static str> {
+    let tainted = seen.level_after == CrateTaintLevel::Tainted;
+    let cleaned = seen.level_before == CrateTaintLevel::Tainted && !tainted;
+    let history_empty = seen.history_after == 0;
+    let (no_unapproved_sink, sensitive_kept, audit_trail) = match (input, &seen.outcome) {
+        (Input::Call(call), Some(outcome)) => (
+            implies(
+                outcome.forwarded && call.tool_class == ToolClass::PrivilegedSink && tainted,
+                call.override_allowed,
+            ),
+            implies(outcome.forwarded, call.arg_sens == ArgSens::Safe),
+            outcome.audit.decision == outcome.decision
+                && outcome.audit.taint_at_evaluation == seen.level_before,
+        ),
+        // A Reset forwards nothing and writes no audit entry.
+        (Input::Reset, None) => (true, true, true),
+        (input, outcome) => panic!(
+            "input {input} produced the wrong kind of outcome (call outcome present: {})",
+            outcome.is_some()
+        ),
+    };
+    let checks = [
+        ("NoUnapprovedTaintedSinkForwarded", no_unapproved_sink),
+        ("SensitiveArgsNeverForwarded", sensitive_kept),
+        (
+            "MonotonicSessionTaint",
+            implies(!tainted, history_empty || seen.history_ends_with_reset),
+        ),
+        ("CompleteAuditTrail", audit_trail),
+        (
+            "MonotonicTaintStep",
+            implies(
+                cleaned,
+                seen.history_ends_with_reset && seen.history_after == seen.history_before + 1,
+            ),
+        ),
+    ];
+    checks
+        .into_iter()
+        .find(|(_, holds)| !holds)
+        .map(|(name, _)| name)
+}
+
+/// The first field in which the observed outcome differs from the spec run:
+/// forwarded flag, decision, audit entry, taint level, then history length.
+fn divergence(input: Input, seen: &Observed, spec: &SpecRun) -> Option<String> {
+    let mut fields: Vec<(&'static str, String, String)> = Vec::new();
+    if let (Input::Call(call), Some(done), Some(outcome)) = (input, &spec.done, &seen.outcome) {
+        let implementation_entry = AuditEntry {
+            seq: u32::try_from(outcome.audit.sequence).unwrap_or(u32::MAX),
+            tool_class: spec_tool_class(outcome.audit.category),
+            arg_sens: spec_arg_sens(outcome.audit.sensitivity),
+            taint: spec_taint(outcome.audit.taint_at_evaluation),
+            decision: spec_decision(&outcome.audit.decision),
+        };
+        fields.push((
+            "forwarded",
+            format!("{:?}", done.forwarded_to_child),
+            format!("{:?}", outcome.forwarded),
+        ));
+        fields.push((
+            "decision",
+            format!("{:?}", done.decision),
+            format!("{:?}", spec_decision(&outcome.decision)),
+        ));
+        fields.push((
+            "audit entry",
+            format!("{:?}", done.audit_log.last()),
+            format!("{:?}", Some(implementation_entry)),
+        ));
+        fields.push((
+            "audit tool name",
+            tool_name(call.tool_class).to_string(),
+            outcome.audit.tool_name.clone(),
+        ));
+    }
+    fields.push((
+        "taint level",
+        format!("{:?}", spec.idle.session_taint),
+        format!("{:?}", spec_taint(seen.level_after)),
+    ));
+    fields.push((
+        "history length",
+        spec.idle.taint_history.len().to_string(),
+        seen.history_after.to_string(),
+    ));
+    fields
+        .into_iter()
+        .find(|(_, spec_value, implementation_value)| spec_value != implementation_value)
+        .map(|(field, spec_value, implementation_value)| {
+            format!("{field}: spec {spec_value}, implementation {implementation_value}")
+        })
+}
+
+/// The first invariant violation or spec divergence, with its input trace.
+#[derive(Debug)]
+struct SearchFailure {
+    check: String,
+    detail: String,
+    trace: Vec<Input>,
+}
+
+impl fmt::Display for SearchFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "{} failed after {} inputs: {}",
+            self.check,
+            self.trace.len(),
+            self.detail
+        )?;
+        for (step, input) in self.trace.iter().enumerate() {
+            writeln!(f, "  {}: {input}", step + 1)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct SearchStats {
+    /// Input sequences of length 1 to `MAX_INPUTS` (the deepest pass).
+    sequences: usize,
+    /// Node visits over every pass of the iterative deepening.
+    visits: usize,
+}
+
+fn check_last_input<M: TaintMachine>(trace: &[Input], spec: &SpecRun) -> Result<(), SearchFailure> {
+    let input = *trace.last().expect("a sequence has at least one input");
+    let seen = observe_last::<M>(trace);
+    if let Some(invariant) = broken_invariant(input, &seen) {
+        return Err(SearchFailure {
+            check: invariant.to_string(),
+            detail: seen.to_string(),
+            trace: trace.to_vec(),
+        });
+    }
+    match divergence(input, &seen, spec) {
+        Some(detail) => Err(SearchFailure {
+            check: "SpecDivergence".to_string(),
+            detail,
+            trace: trace.to_vec(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Depth-first search below `idle` with a length limit.
+fn visit<M: TaintMachine>(
+    model: &SpecModel,
+    idle: &SpecState,
+    trace: &mut Vec<Input>,
+    limit: usize,
+    stats: &mut SearchStats,
+) -> Result<(), SearchFailure> {
+    if trace.len() == limit {
+        return Ok(());
+    }
+    for (input, run) in spec_inputs(model, idle) {
+        trace.push(input);
+        stats.sequences += 1;
+        stats.visits += 1;
+        check_last_input::<M>(trace, &run)?;
+        visit::<M>(model, &run.idle, trace, limit, stats)?;
+        trace.pop();
+    }
+    Ok(())
+}
+
+/// Iterative deepening to `MAX_INPUTS`: every pass with limit `n` follows a
+/// pass with limit `n - 1` that found nothing, so the first failure has the
+/// shortest trace.
+fn search<M: TaintMachine>() -> Result<SearchStats, SearchFailure> {
+    let model = SpecModel {
+        max_calls: 5,
+        broken: false,
+    };
+    let mut stats = SearchStats {
+        sequences: 0,
+        visits: 0,
+    };
+    for limit in 1..=MAX_INPUTS {
+        stats.sequences = 0;
+        visit::<M>(
+            &model,
+            &SpecModel::init(),
+            &mut Vec::new(),
+            limit,
+            &mut stats,
+        )?;
+    }
+    Ok(stats)
+}
+
+#[test]
+fn implementation_matches_spec_model_to_depth_5() {
+    let stats = search::<SessionTaintState>().unwrap_or_else(|failure| panic!("{failure}"));
+    println!(
+        "SessionTaintState matches SpecModel {{ max_calls: 5 }}: {} input sequences, {} node visits",
+        stats.sequences, stats.visits
+    );
+    assert_eq!(stats.sequences, 302_558);
+}
+
+#[test]
+fn mutant_is_caught_with_shortest_trace() {
+    let failure = search::<MutantForwardsSinkBeforeTaintCheck>()
+        .expect_err("the mutant must break an invariant");
+    println!("MutantForwardsSinkBeforeTaintCheck: {failure}");
+    assert_eq!(failure.check, "NoUnapprovedTaintedSinkForwarded");
+    assert_eq!(
+        failure.trace,
+        [
+            Input::Call(Call {
+                tool_class: ToolClass::UntrustedSource,
+                arg_sens: ArgSens::Safe,
+                override_allowed: false,
+            }),
+            Input::Call(Call {
+                tool_class: ToolClass::PrivilegedSink,
+                arg_sens: ArgSens::Safe,
+                override_allowed: false,
+            }),
+        ]
+    );
+}

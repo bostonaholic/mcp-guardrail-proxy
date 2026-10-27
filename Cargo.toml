@@ -1,0 +1,31 @@
+[package]
+name = "mcp-guardrail-proxy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Stdio proxy that enforces taint-aware guardrail policy on MCP tool calls"
+categories = ["command-line-utilities"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.8"
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "mcp-guardrail-proxy"
+path = "src/main.rs"
+
+[[test]]
+name = "integration_test"
+harness = false
+
+[profile.dev.package."*"]
+opt-level = 3
