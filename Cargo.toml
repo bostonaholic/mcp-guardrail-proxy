@@ -13,9 +13,14 @@ serde_json = "1"
 thiserror = "2"
 toml = "0.8"
 regex = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "integration_test"
+harness = false
 
 [profile.dev.package."*"]
 opt-level = 3
