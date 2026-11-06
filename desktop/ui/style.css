@@ -1,0 +1,36 @@
+:root {
+  --bg: #fbfbfa; --fg: #1d1f21; --muted: #6b7075; --line: #e3e4e2; --surface: #ffffff;
+  --deny: #b3261e; --approve: #8a5a00; --allow: #2e6b3e; --banner: #fdecea;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a; --fg: #e6e7e8; --muted: #9a9fa5; --line: #2c2e31; --surface: #1f2123;
+    --deny: #f2877e; --approve: #e5b95c; --allow: #7fc794; --banner: #3b1f1d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 20px 24px 32px; background: var(--bg); color: var(--fg); font: 13px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 13px; margin: 24px 0 4px; }
+.muted { color: var(--muted); }
+header p { margin: 2px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.note { margin: 0 0 8px; font-size: 12px; }
+.banner { background: var(--banner); padding: 8px 12px; border-radius: 6px; margin: 12px 0 0; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 16px; }
+.stats div { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.stats strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.stats span { color: var(--muted); font-size: 12px; }
+table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+tr:last-child td { border-bottom: 0; }
+.calls { table-layout: fixed; }
+.calls .time { width: 104px; }
+.calls .tool { width: 18%; }
+.calls .decision { width: 124px; }
+.calls .rule { width: 26%; }
+.filter { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+.deny, .Tainted { color: var(--deny); font-weight: 600; }
+.require-approval { color: var(--approve); font-weight: 600; }
+.allow { color: var(--allow); }

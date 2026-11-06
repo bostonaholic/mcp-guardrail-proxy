@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B4A55"/>
+      <stop offset="1" stop-color="#0C2229"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D5E2E3"/>
+    </linearGradient>
+    <linearGradient id="gate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FF7A45"/>
+      <stop offset="1" stop-color="#E5431F"/>
+    </linearGradient>
+    <clipPath id="tile-shape"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="150%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="16"/>
+      <feOffset dy="14"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.38"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <mask id="pipe">
+      <rect width="100" height="100" fill="#fff"/>
+      <rect x="0" y="43" width="43" height="12" fill="#000"/>
+    </mask>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <g clip-path="url(#tile-shape)">
+    <g transform="translate(212 196) scale(6)" filter="url(#lift)">
+      <path d="M50 4C62 12 76 15 90 15V47C90 71 73 87 50 97C27 87 10 71 10 47V15C24 15 38 12 50 4Z" fill="url(#shield)" mask="url(#pipe)"/>
+      <rect x="50" y="22" width="12" height="54" rx="3" fill="url(#gate)"/>
+    </g>
+  </g>
+</svg>

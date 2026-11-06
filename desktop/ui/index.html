@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MCP Guardrail</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>MCP Guardrail</h1>
+      <p id="log-path" class="muted"></p>
+    </header>
+    <p id="source-error" class="banner" hidden></p>
+    <p id="malformed" class="banner" hidden></p>
+    <section class="stats">
+      <div><strong id="stat-sessions">0</strong><span>sessions</span></div>
+      <div><strong id="stat-tainted">0</strong><span>tainted</span></div>
+      <div><strong id="stat-calls">0</strong><span>calls</span></div>
+      <div><strong id="stat-blocked">0</strong><span>blocked</span></div>
+    </section>
+    <h2>Sessions</h2>
+    <p class="muted note">Taint shows the level before each session's latest call. Ended sessions stay listed.</p>
+    <table>
+      <thead><tr><th>Session</th><th>Taint</th><th>Calls</th><th>Blocked</th><th>Last seen</th></tr></thead>
+      <tbody id="sessions"></tbody>
+    </table>
+    <h2>Recent calls</h2>
+    <label class="filter"><input id="blocked-only" type="checkbox" /> Blocked only</label>
+    <table class="calls">
+      <colgroup><col class="time" /><col class="tool" /><col class="decision" /><col class="rule" /><col /></colgroup>
+      <thead><tr><th>Time</th><th>Tool</th><th>Decision</th><th>Rule</th><th>Reason</th></tr></thead>
+      <tbody id="events"></tbody>
+    </table>
+    <p id="empty" class="muted" hidden>No audit lines yet. Start a proxy with --audit-log pointed at the path above.</p>
+    <script src="app.js"></script>
+  </body>
+</html>
