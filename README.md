@@ -4,6 +4,8 @@ A stdio proxy that sits between an MCP host and an upstream MCP server. It check
 
 Taint means the session has read untrusted content, such as a web page or an email. After that, the policy can block calls that send data out, such as shell, messaging, and upload tools.
 
+[VISION.md](VISION.md) says why the proxy exists, what it refuses to be, and where it is going. [AGENTS.md](AGENTS.md) is the guide for agents that change this repository.
+
 ## Install
 
 Ask your agent:
