@@ -27,7 +27,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 2. Install the binary. The crate is not on crates.io, so cargo builds it from GitHub. The build takes several minutes, so give the command a timeout of at least 10 minutes.
 
    ```sh
-   cargo install --git https://github.com/bostonaholic/mcp-guardrail-proxy --locked
+   cargo install --git https://github.com/bostonaholic/mcp-guardrail-proxy mcp-guardrail-proxy --locked
    ```
 
 3. Test the binary. The binary holds the default policy, so you need no policy file. Run this block in one shell.
@@ -378,6 +378,10 @@ Grok Bot should take the same `mcpServers` shape, but nobody has tested its form
   }
 }
 ```
+
+## Desktop app
+
+`desktop/` holds a read-only tray app prototype. It watches an audit log and notifies you when a call is blocked. It is a separate crate that never talks to a proxy, so the proxy behaves the same with or without it. See [desktop/README.md](desktop/README.md).
 
 ## Replay and benchmarks
 
