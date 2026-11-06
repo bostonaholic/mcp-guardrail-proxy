@@ -222,7 +222,7 @@ When more than one rule applies, `deny` beats `require-approval`, and `require-a
 | 14 | `tainted-approve-workspace-write` | `write_file`, `edit_file`, `create_file`, `apply_patch`, `str_replace_editor`, `move_file`, `delete_file`, tainted session | require-approval | medium |
 | 15 | `tainted-approve-pr-creation` | `create_pull_request`, `create_pr`, `merge_pull_request`, tainted session | require-approval | high |
 
-Shell tools are `shell`, `bash`, `sh`, `zsh`, `exec`, `execute`, `execute_command`, `run_command`, `run_shell_command`, `run_terminal_cmd`, and `terminal`. Matching ignores case.
+Shell tools are `shell`, `bash`, `sh`, `zsh`, `powershell`, `pwsh`, `cmd`, `exec`, `execute`, `execute_command`, `run_command`, `run_shell_command`, `run_terminal_cmd`, and `terminal`. Matching ignores case.
 
 ### Known false positives and misses
 
@@ -385,7 +385,7 @@ Grok Bot should take the same `mcpServers` shape, but nobody has tested its form
 
 ## Replay and benchmarks
 
-The replay command runs a corpus of 10 prompt-injection scenarios against a policy and reports the outcome:
+The replay command runs a corpus of 11 prompt-injection scenarios against a policy and reports the outcome:
 
 ```sh
 mcp-guardrail-proxy replay --policy policies/default-policy.toml --corpus fixtures/replay-corpus.json
@@ -394,9 +394,9 @@ mcp-guardrail-proxy replay --policy policies/default-policy.toml --corpus fixtur
 The recorded output:
 
 ```text
-replay: 10/10 scenarios matched, 36/36 steps matched
-blocked: tp 15, fp 0, fn 0 (precision 100.0%, recall 100.0%)
-exfiltration: 7 steps, 0 false negatives
+replay: 11/11 scenarios matched, 40/40 steps matched
+blocked: tp 18, fp 0, fn 0 (precision 100.0%, recall 100.0%)
+exfiltration: 10 steps, 0 false negatives
 latency: max 151 us, mean 46.5 us (budget 1000 us)
 result: PASS
 ```

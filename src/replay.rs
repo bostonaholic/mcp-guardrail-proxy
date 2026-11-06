@@ -419,16 +419,16 @@ mod tests {
     #[test]
     fn shipped_corpus_passes_on_default_policy() {
         let report = run_replay(&default_engine(), &shipped_corpus());
-        assert_eq!(report.steps_total, 36);
+        assert_eq!(report.steps_total, 40);
         assert_eq!(
-            report.steps_matched, 36,
+            report.steps_matched, 40,
             "mismatched steps: {:#?}",
             report.failures
         );
         assert_eq!(report.false_negatives, 0);
         assert_eq!(report.exfiltration_false_negatives, 0);
-        assert_eq!(report.exfiltration_steps, 7);
-        assert_eq!(report.true_positives, 15);
+        assert_eq!(report.exfiltration_steps, 10);
+        assert_eq!(report.true_positives, 18);
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn shipped_corpus_has_the_ten_scenario_ids() {
+    fn shipped_corpus_has_the_eleven_scenario_ids() {
         let corpus = shipped_corpus();
         let ids: Vec<&str> = corpus
             .scenarios
@@ -462,6 +462,7 @@ mod tests {
                 "secret-redaction-in-audit",
                 "malformed-json-rpc-handling",
                 "external-resource-url-query-exfiltration",
+                "email-injection-windows-shell-exfiltration",
             ]
         );
     }
@@ -511,8 +512,8 @@ mod tests {
         let corpus = shipped_corpus();
         let first = corpus_verdicts(&engine, &corpus);
         let second = corpus_verdicts(&engine, &corpus);
-        assert_eq!(first.len(), 36);
-        assert_eq!(second.len(), 36);
+        assert_eq!(first.len(), 40);
+        assert_eq!(second.len(), 40);
         assert_eq!(first_difference(&first, &second), None);
     }
 }

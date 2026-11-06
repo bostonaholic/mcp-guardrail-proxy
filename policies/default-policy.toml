@@ -67,7 +67,7 @@ severity = "high"
 [[rules]]
 id = "deny-destructive-shell"
 description = "Destructive shell commands are never allowed"
-tool_regex = '(?i)^(shell|bash|sh|zsh|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
+tool_regex = '(?i)^(shell|bash|sh|zsh|powershell|pwsh|cmd|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
 when_tainted = false
 arg_regexes = [
     '(?i)\brm\s+-[a-z]*(rf|fr)',
@@ -82,7 +82,7 @@ severity = "critical"
 [[rules]]
 id = "deny-env-dump"
 description = "Dumping the process environment can leak secrets"
-tool_regex = '(?i)^(shell|bash|sh|zsh|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
+tool_regex = '(?i)^(shell|bash|sh|zsh|powershell|pwsh|cmd|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
 when_tainted = false
 arg_regexes = [
     '(?m)(^|[\s;|&(`])printenv\b',
@@ -95,7 +95,7 @@ severity = "high"
 [[rules]]
 id = "tainted-deny-shell-exec"
 description = "Shell execution is blocked after the session read untrusted content"
-tool_regex = '(?i)^(shell|bash|sh|zsh|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
+tool_regex = '(?i)^(shell|bash|sh|zsh|powershell|pwsh|cmd|exec|execute|execute_command|run_command|run_shell_command|run_terminal_cmd|terminal)$'
 when_tainted = true
 decision = "deny"
 severity = "critical"
