@@ -2,7 +2,7 @@
 
 Read [VISION.md](VISION.md) before a change that adds a rule, a taint source, a transport, or a control-plane seam. It says what the proxy is for, what it refuses to be, and how to judge whether a change fits.
 
-[README.md](README.md) holds the install steps, the architecture, the policy format, the audit format, and the verification tiers.
+[INSTALL.md](INSTALL.md) holds the install steps. [README.md](README.md) holds the architecture, the policy format, the audit format, and the verification tiers.
 
 ## Before a change is done
 
