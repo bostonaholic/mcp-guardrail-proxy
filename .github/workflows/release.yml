@@ -23,8 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-15, platform: macos-arm64, bundles: dmg }
-          - { runner: macos-15-intel, platform: macos-x86_64, bundles: dmg }
+          - { runner: macos-15, platform: macos-arm64, bundles: "app,dmg" }
+          - { runner: macos-15-intel, platform: macos-x86_64, bundles: "app,dmg" }
           # Ubuntu 22.04 keeps the glibc floor low, so the Linux files run on older distros.
           - { runner: ubuntu-22.04, platform: linux-x86_64, bundles: "deb,rpm,appimage" }
           - { runner: ubuntu-22.04-arm, platform: linux-arm64, bundles: "deb,rpm,appimage" }
