@@ -96,9 +96,11 @@ function renderUpdates(view) {
   byId("update-status").textContent = view.status;
   showBanner(byId("settings-note"), view.settings_note);
   showBanner(byId("install-note"), view.install_note);
-  byId("check-now").disabled = view.busy;
+  // After an install, only Restart has an effect until the app restarts.
+  const acceptsRequests = !view.busy && !view.restart_ready;
+  byId("check-now").disabled = !acceptsRequests;
   byId("install").hidden = !view.can_install;
-  byId("install").disabled = !view.available || view.busy;
+  byId("install").disabled = !view.available || !acceptsRequests;
   byId("restart").hidden = !view.restart_ready;
   byId("open-release-page").hidden = view.can_install;
 }
