@@ -5,17 +5,22 @@
 
 mod audit;
 mod notify;
+#[cfg(test)]
+#[path = "../../src/machines/spec_graph.rs"]
+mod spec_graph;
 mod tail;
+mod watch;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use audit::{Dashboard, Snapshot, alert_for, tray_status};
+use audit::{AuditEvent, Dashboard, Snapshot, alert_for, tray_status};
 use tail::Tail;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use watch::Watch;
 
 const LOG_PATH_VARIABLE: &str = "MCP_GUARDRAIL_AUDIT_LOG";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -77,6 +82,14 @@ fn publish(
     let _ = app.emit("dashboard-updated", ());
 }
 
+/// Reads the log into the dashboard. Returns the new audit events and any read error.
+fn poll_log(tail: &mut Tail, dashboard: &mut Dashboard) -> (Vec<AuditEvent>, Option<String>) {
+    match tail.read_new_lines() {
+        Ok(lines) => (dashboard.apply_lines(&lines), None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    }
+}
+
 /// Polls forever. A read error stays on screen, and polling continues so the app recovers.
 fn watch_log(
     app: AppHandle,
@@ -84,27 +97,25 @@ fn watch_log(
     status_item: MenuItem<tauri::Wry>,
     mut tail: Tail,
     mut dashboard: Dashboard,
+    mut watch: Watch,
     log_path: String,
 ) {
-    let mut last_error = None;
     loop {
         std::thread::sleep(POLL_INTERVAL);
-        let (events, error) = match tail.read_new_lines() {
-            Ok(lines) => (dashboard.apply_lines(&lines), None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
-        };
-        if events.is_empty() && error == last_error {
-            continue;
+        let (events, error) = poll_log(&mut tail, &mut dashboard);
+        let actions = watch.after_poll(dashboard.revision(), error.as_deref());
+        if actions.publish {
+            publish(
+                &app,
+                &shared,
+                &status_item,
+                dashboard.snapshot(&log_path, error),
+            );
         }
-        last_error.clone_from(&error);
-        publish(
-            &app,
-            &shared,
-            &status_item,
-            dashboard.snapshot(&log_path, error),
-        );
-        if let Some(alert) = alert_for(&events) {
-            notify::send(&app, &alert);
+        if actions.may_alert {
+            if let Some(alert) = alert_for(&events) {
+                notify::send(&app, &alert);
+            }
         }
     }
 }
@@ -129,14 +140,11 @@ fn main() {
             let log_path = path.display().to_string();
             let mut tail = Tail::new(path);
             let mut dashboard = Dashboard::default();
-            // Lines already in the log are history: load them without notifying.
-            let source_error = match tail.read_new_lines() {
-                Ok(lines) => {
-                    dashboard.apply_lines(&lines);
-                    None
-                }
-                Err(error) => Some(error.to_string()),
-            };
+            let mut watch = Watch::new();
+            // Lines already in the log are history: the first read that works loads them, and
+            // `watch` keeps them from raising a notification.
+            let (_, source_error) = poll_log(&mut tail, &mut dashboard);
+            watch.after_poll(dashboard.revision(), source_error.as_deref());
             let first = dashboard.snapshot(&log_path, source_error);
             let status_item = build_tray(app.handle(), &tray_status(&first))?;
             let shared: SharedSnapshot = Arc::new(Mutex::new(first));
@@ -144,7 +152,15 @@ fn main() {
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                watch_log(handle, shared, status_item, tail, dashboard, log_path);
+                watch_log(
+                    handle,
+                    shared,
+                    status_item,
+                    tail,
+                    dashboard,
+                    watch,
+                    log_path,
+                );
             });
             Ok(())
         })

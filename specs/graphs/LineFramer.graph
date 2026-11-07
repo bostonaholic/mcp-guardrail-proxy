@@ -1,0 +1,25 @@
+edge lineDone=FALSE emitted=None lineLen=1 held=1 phase=InLine | Content | lineDone=FALSE emitted=None lineLen=2 held=2 phase=InLine
+edge lineDone=FALSE emitted=None lineLen=1 held=1 phase=InLine | End | lineDone=TRUE emitted=Complete lineLen=1 held=1 phase=AtLineStart
+edge lineDone=FALSE emitted=None lineLen=1 held=1 phase=InLine | Newline | lineDone=TRUE emitted=Complete lineLen=1 held=1 phase=AtLineStart
+edge lineDone=FALSE emitted=None lineLen=2 held=2 phase=InLine | Content | lineDone=FALSE emitted=None lineLen=3 held=0 phase=Discarding
+edge lineDone=FALSE emitted=None lineLen=2 held=2 phase=InLine | End | lineDone=TRUE emitted=Complete lineLen=2 held=2 phase=AtLineStart
+edge lineDone=FALSE emitted=None lineLen=2 held=2 phase=InLine | Newline | lineDone=TRUE emitted=Complete lineLen=2 held=2 phase=AtLineStart
+edge lineDone=FALSE emitted=None lineLen=3 held=0 phase=Discarding | Content | lineDone=FALSE emitted=None lineLen=3 held=0 phase=Discarding
+edge lineDone=FALSE emitted=None lineLen=3 held=0 phase=Discarding | End | lineDone=TRUE emitted=Oversize lineLen=3 held=0 phase=AtLineStart
+edge lineDone=FALSE emitted=None lineLen=3 held=0 phase=Discarding | Newline | lineDone=TRUE emitted=Oversize lineLen=3 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=Complete lineLen=0 held=0 phase=AtLineStart | Content | lineDone=FALSE emitted=None lineLen=1 held=1 phase=InLine
+edge lineDone=TRUE emitted=Complete lineLen=0 held=0 phase=AtLineStart | End | lineDone=TRUE emitted=Eof lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=Complete lineLen=0 held=0 phase=AtLineStart | Newline | lineDone=TRUE emitted=Complete lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=Complete lineLen=1 held=1 phase=AtLineStart | Content | lineDone=FALSE emitted=None lineLen=1 held=1 phase=InLine
+edge lineDone=TRUE emitted=Complete lineLen=1 held=1 phase=AtLineStart | End | lineDone=TRUE emitted=Eof lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=Complete lineLen=1 held=1 phase=AtLineStart | Newline | lineDone=TRUE emitted=Complete lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=Complete lineLen=2 held=2 phase=AtLineStart | Content | lineDone=FALSE emitted=None lineLen=1 held=1 phase=InLine
+edge lineDone=TRUE emitted=Complete lineLen=2 held=2 phase=AtLineStart | End | lineDone=TRUE emitted=Eof lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=Complete lineLen=2 held=2 phase=AtLineStart | Newline | lineDone=TRUE emitted=Complete lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=None lineLen=0 held=0 phase=AtLineStart | Content | lineDone=FALSE emitted=None lineLen=1 held=1 phase=InLine
+edge lineDone=TRUE emitted=None lineLen=0 held=0 phase=AtLineStart | End | lineDone=TRUE emitted=Eof lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=None lineLen=0 held=0 phase=AtLineStart | Newline | lineDone=TRUE emitted=Complete lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=Oversize lineLen=3 held=0 phase=AtLineStart | Content | lineDone=FALSE emitted=None lineLen=1 held=1 phase=InLine
+edge lineDone=TRUE emitted=Oversize lineLen=3 held=0 phase=AtLineStart | End | lineDone=TRUE emitted=Eof lineLen=0 held=0 phase=AtLineStart
+edge lineDone=TRUE emitted=Oversize lineLen=3 held=0 phase=AtLineStart | Newline | lineDone=TRUE emitted=Complete lineLen=0 held=0 phase=AtLineStart
+init lineDone=TRUE emitted=None lineLen=0 held=0 phase=AtLineStart

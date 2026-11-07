@@ -31,7 +31,8 @@ Each blocked call reaches Notification Center within about 3 seconds. Open it to
 - Taint lags by one call. An audit line records the level from before its call, so a call that taints a session shows up on that session's next call.
 - Ended sessions stay listed, because the log has no end-of-session record.
 - An audit sink failure is invisible here. The failed line goes to stderr as `audit-fallback:`, not to the log.
-- Lines already in the log at launch load as history and raise no notification.
+- Lines already in the log at launch load as history and raise no notification. If the first read fails, the first read that works counts as that launch read.
+- A replacement log that grows past the old read position between two polls goes unnoticed, because the app polls by size. Its earlier lines are lost to the dashboard. The proxy only appends, so only an outside rotation can cause this.
 
 The app leaves out `arguments`, because redaction matches known patterns and a secret could survive it.
 
@@ -55,4 +56,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/main.rs` holds the tray, the window, and the notifications. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
+`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/tail.rs` and `src/watch.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/main.rs` holds the tray, the window, and the notifications. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.

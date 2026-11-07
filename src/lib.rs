@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod control_plane;
+pub mod machines;
 pub mod policy;
 pub mod protocol;
 pub mod proxy;

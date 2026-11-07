@@ -2,16 +2,16 @@
 name: verify-taint-invariants
 description: Re-run the MCP guardrail taint invariant checks for the taint, policy, and proxy state machine in src/taint.rs, src/policy.rs, src/proxy.rs and its TLA+ spec specs/McpGuardrailTaint.tla. Run them after any change under src, specs, tests, scripts, policies, or fixtures, or to Cargo.toml or Cargo.lock. Prove that the checks catch a deliberate break before you move the sync commit.
 metadata:
-  sync-commit: a194f07c7b6fcf07b413b469c23730cddf5ec478
-  verified-files: src/taint.rs src/policy.rs src/proxy.rs specs/McpGuardrailTaint.tla
-  verified-paths: src specs tests scripts policies fixtures
+  sync-commit: cb618c654379f294a75d844de4f2c2fc28e963b3
+  verified-files: src/taint.rs src/policy.rs src/proxy.rs src/machines specs
+  verified-paths: src specs tests scripts policies fixtures desktop/src
 ---
 
 # Verify the MCP guardrail taint invariants
 
 ## When to use
 
-Use this skill after you edit any tracked file under `src`, `specs`, `tests`, `scripts`, `policies`, or `fixtures`. Use it also after you edit `Cargo.toml` or `Cargo.lock`.
+Use this skill after you edit any tracked file under `src`, `specs`, `tests`, `scripts`, `policies`, `fixtures`, or `desktop/src`. Use it also after you edit `Cargo.toml` or `Cargo.lock`.
 
 The sync check under "Check sync status" does not see `Cargo.toml` or `Cargo.lock`. After an edit to either file, run the commands under "Run both verification paths" anyway.
 
@@ -22,7 +22,7 @@ The sync commit is the last commit on whose tree every command under "Run both v
 Run this command from the repository root:
 
 ```sh
-git diff --quiet a194f07c7b6fcf07b413b469c23730cddf5ec478 -- src specs tests scripts policies fixtures
+git diff --quiet cb618c654379f294a75d844de4f2c2fc28e963b3 -- src specs tests scripts policies fixtures desktop/src
 ```
 
 Replace the hash with the value of `metadata.sync-commit` if it has moved. Exit 0 means the verified paths match the sync commit. A non-zero exit means they changed, so run the commands under "Run both verification paths".
@@ -31,11 +31,12 @@ The command compares the working tree, so it also sees edits that are not commit
 
 ## Run both verification paths
 
-Run these three commands in order. Each must exit 0.
+Run these four commands in order. Each must exit 0.
 
 1. `MCP_GUARDRAIL_OFFLINE=1 ./scripts/verify-tla.sh`
 2. `cargo test`
-3. `cargo run -- replay --policy policies/default-policy.toml --corpus fixtures/replay-corpus.json`
+3. `cargo test --manifest-path desktop/Cargo.toml`
+4. `cargo run -- replay --policy policies/default-policy.toml --corpus fixtures/replay-corpus.json`
 
 The `cargo test` output must also hold this line:
 
@@ -53,13 +54,15 @@ The script runs the first available tier only. Its first output line names the t
 |---|---|
 | 1 | TLC from your `PATH` model-checked the `.tla` files. |
 | 2 | TLC from `.tla-cache/tla2tools.jar` model-checked the `.tla` files. `MCP_GUARDRAIL_OFFLINE=1` stops the download. |
-| 3 | Only the Rust mirror in `tests/tla_trace_equivalence.rs` ran. No tool read the `.tla` text. |
+| 3 | The Rust mirror in `tests/tla_trace_equivalence.rs` and the walks of the committed graphs ran. No tool read the `.tla` text. |
 
 The script prints one line per spec:
 
 - `PASS McpGuardrailTaint: ...` means the good spec holds all invariants (tiers 1 and 2), or the mirror test `spec_model_satisfies_all_invariants` passed (tier 3).
 - `PASS McpGuardrailTaintBroken: violates NoUnapprovedTaintedSinkForwarded as expected` means the broken spec failed the way it must. That proves the check can fail.
-- A `FAIL ...` line means a spec did not give its expected verdict. The script then prints `verify-tla: FAILED` and exits 1. It also exits 1 when no tier is available.
+- `PASS <Spec>: TLC found no error, <n> edges match specs/graphs/<Spec>.graph` means a machine spec holds and its committed graph is current.
+- `PASS <Spec>Broken: <evidence>, as expected` means a machine spec's broken variant failed the way it must.
+- A `FAIL ...` line means a spec did not give its expected verdict, or a committed graph no longer matches its spec. After a deliberate spec change, run `scripts/verify-tla.sh --update-graphs` and read the graph diff. The script then prints `verify-tla: FAILED` and exits 1. It also exits 1 when no tier is available.
 - `verify-tla: OK (tier <n>)` is the last line of a pass.
 
 ### The 3619 state count
@@ -114,6 +117,16 @@ State 2: <Action line ...>
 Each `State <n>` block lists the value of every variable after one action. To find the code behind an action, use the "Spec-to-code map" below.
 
 If `/statechart` exists in your environment, feed it the trace to draw the phase diagram. If it does not, draw the five phases by hand: Idle, Received, Evaluated, Audited, Done.
+
+### Read a walk failure
+
+A `*_matches_every_edge_of_the_spec` test prints the action, the variable, and the spec state:
+
+```text
+<action>: <variable> differs from the spec state {...}
+```
+
+The Rust machine took that edge to a different state than the spec did. `specs/README.md` maps each spec to its machine.
 
 ## Prove a deliberate break before you move the sync commit
 

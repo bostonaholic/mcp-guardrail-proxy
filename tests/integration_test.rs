@@ -56,6 +56,14 @@ fn main() -> ExitCode {
             denied_sensitive_read_sends_zero_bytes_to_child(),
         ),
         run_test(
+            "queue_stays_open_until_both_relays_end",
+            queue_stays_open_until_both_relays_end(),
+        ),
+        run_test(
+            "host_output_failure_ends_session_with_child_not_reading",
+            host_output_failure_ends_session_with_child_not_reading(),
+        ),
+        run_test(
             "tainted_shell_is_denied_after_untrusted_fetch",
             tainted_shell_is_denied_after_untrusted_fetch(),
         ),
@@ -593,6 +601,78 @@ async fn child_exit_with_open_descendant_pipe_returns_after_drain_grace() {
         1,
         "proxy stderr: {:?}",
         stderr.text()
+    );
+}
+
+/// `WriterDrains` in `specs/SessionLifecycle.tla`: with stdout closed and stderr still open, the
+/// queue stays open. A debug assertion in `SessionLifecycle` fails this test if it closes early.
+async fn queue_stays_open_until_both_relays_end() {
+    let dir = TempDir::new().expect("create a temp dir");
+    let stderr = SharedBuffer::default();
+    let mut config = proxy_config(dir.path(), &[], &stderr);
+    config.upstream_command = ["sh", "-c", "exec 1>&-; sleep 1"]
+        .map(String::from)
+        .to_vec();
+    let (host_writer, proxy_input) = tokio::io::duplex(1024);
+    drop(host_writer);
+    let (proxy_output, _host_reader) = tokio::io::duplex(1024);
+    let status = run_proxy_with_io(config, proxy_input, proxy_output)
+        .await
+        .expect("the session ends cleanly");
+    assert!(status.success(), "status: {status:?}");
+}
+
+/// A host output that fails every write.
+struct BrokenHostOutput;
+
+impl tokio::io::AsyncWrite for BrokenHostOutput {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// `WriterFailureFinishes` in `specs/SessionLifecycle.tla`: host input is stuck writing to a
+/// child that never reads, and the dead host must still end the session.
+async fn host_output_failure_ends_session_with_child_not_reading() {
+    let dir = TempDir::new().expect("create a temp dir");
+    let stderr = SharedBuffer::default();
+    let mut config = proxy_config(dir.path(), &[], &stderr);
+    config.upstream_command = ["sh", "-c", "sleep 1; echo line-for-the-host; exec sleep 60"]
+        .map(String::from)
+        .to_vec();
+    let (mut host_writer, proxy_input) = tokio::io::duplex(64 * 1024);
+    let padding = "x".repeat(1024 * 1024);
+    let frame = format!(
+        "{}\n",
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"pad": padding}})
+    );
+    let flood = tokio::spawn(async move {
+        // More than a pipe holds, so a write to the child blocks.
+        while host_writer.write_all(frame.as_bytes()).await.is_ok() {}
+    });
+    let outcome = run_proxy_with_io(config, proxy_input, BrokenHostOutput).await;
+    flood.abort();
+    assert!(
+        matches!(outcome, Err(ProxyError::Io(_))),
+        "outcome: {outcome:?}"
     );
 }
 

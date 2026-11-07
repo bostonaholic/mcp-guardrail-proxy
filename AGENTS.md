@@ -14,4 +14,5 @@ Every command under "Development" in the README must exit 0. After a change unde
 
 - No source or test file may open a network connection. The README's last development command greps for it.
 - A new rule or taint source gets a replay scenario in `fixtures/replay-corpus.json` and a row in the README policy tables.
+- New code that remembers state between events and acts on it gets a pure machine, a spec, and a graph walk. [specs/README.md](specs/README.md) has the steps.
 - Audit lines are the only record of a decision. A change to their fields or to redaction updates the README "Audit log" section in the same commit.

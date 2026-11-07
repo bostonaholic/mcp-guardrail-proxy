@@ -124,6 +124,11 @@ impl Dashboard {
         }
     }
 
+    /// Grows with every change that a snapshot would show.
+    pub fn revision(&self) -> u64 {
+        self.total_calls + self.malformed_lines
+    }
+
     pub fn snapshot(&self, log_path: &str, source_error: Option<String>) -> Snapshot {
         let mut sessions: Vec<SessionSummary> = self.sessions.values().cloned().collect();
         sessions.sort_by_key(|session| std::cmp::Reverse(session.last_seen_ms));
