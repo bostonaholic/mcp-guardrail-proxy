@@ -57,6 +57,7 @@ The library crate is `mcp_guardrail_proxy`. The data plane has these modules.
 |---|---|
 | `protocol` | JSON-RPC envelopes, frame parsing, call views, and error replies |
 | `taint` | The session taint state machine, which only moves from clean to tainted |
+| `machines` | The pure state machines behind the proxy: one call's judgment, the session lifecycle, and line framing |
 | `policy` | The TOML policy engine and its classification of each call |
 | `telemetry` | Audit events, secret redaction, and the shared line writer |
 | `proxy` | The `Interceptor` decision point and the async stdio relay |
@@ -265,15 +266,23 @@ The model checks four invariants:
 
 The config also checks the variable types and one step property, `MonotonicTaintStep`.
 
+### The other state machines
+
+Seven more specs cover the rest of the code that keeps state: one call's judgment, the session lifecycle, the line reader, the stderr splitter, the line writer, and the desktop app's log cursor and poll gate. [specs/README.md](specs/README.md) lists each machine, what its spec proves, and what was left out.
+
+These specs reach the code directly. TLC writes each spec's state graph, the script fails if it differs from the committed file in `specs/graphs`, and a test walks the Rust machine along every edge of that file.
+
 ### The three tiers
 
 `scripts/verify-tla.sh` runs the first available tier and nothing else:
 
 1. `tlc` is on your `PATH`. The script runs TLC on each spec.
 2. `java` exists and `.tla-cache/tla2tools.jar` exists or downloads. `MCP_GUARDRAIL_OFFLINE=1` skips the download.
-3. `cargo` exists, or `rustc` exists and there is no `Cargo.toml`. The script runs the Rust mirror in `tests/tla_trace_equivalence.rs`, one test per spec.
+3. `cargo` exists, or `rustc` exists and there is no `Cargo.toml`. The script runs the Rust mirror in `tests/tla_trace_equivalence.rs`, one test per spec, and with `cargo` the walks of the committed graphs. No tool reads the `.tla` text on this tier.
 
-The script also runs `specs/McpGuardrailTaintBroken.tla`, which adds a `ForwardEarly` action. That action forwards a privileged-sink call before the taint check. The check passes only if this spec violates `NoUnapprovedTaintedSinkForwarded`. The shortest counterexample has 7 actions:
+After a deliberate change to a machine spec, `scripts/verify-tla.sh --update-graphs` rewrites `specs/graphs`.
+
+Every spec has a broken variant that must fail. The script also runs `specs/McpGuardrailTaintBroken.tla`, which adds a `ForwardEarly` action. That action forwards a privileged-sink call before the taint check. The check passes only if this spec violates `NoUnapprovedTaintedSinkForwarded`. The shortest counterexample has 7 actions:
 
 1. `Receive` of an `UntrustedSource` call with safe arguments
 2. `Evaluate`
@@ -285,7 +294,7 @@ The script also runs `specs/McpGuardrailTaintBroken.tla`, which adds a `ForwardE
 
 ### Which tier this repository used
 
-This repository's history was verified with tier 3 only, the Rust mirror, because no TLC was available. No tool has read the `.tla` text. A person with TLC should run tier 1 or tier 2 once. That run should report 3619 distinct states for `McpGuardrailTaint` at `MaxCalls = 3`. A different count means the spec and the mirror diverged.
+The history up to the commit that added `specs/README.md` was verified with tier 3 only, the Rust mirror, because no TLC was available. That commit's tree was the first checked with tier 2, TLC 2.19. TLC reported 3619 distinct states for `McpGuardrailTaint` at `MaxCalls = 3`, the count the mirror prints. A different count means the spec and the mirror diverged.
 
 The project skill `.claude/skills/verify-taint-invariants/SKILL.md` describes how to re-run the checks and prove that they catch a deliberate break.
 
@@ -364,6 +373,7 @@ These commands must all exit 0 before a change is done:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo test --manifest-path desktop/Cargo.toml
 MCP_GUARDRAIL_OFFLINE=1 ./scripts/verify-tla.sh
 cargo run -- check-policy --policy policies/default-policy.toml
 cargo run -- replay --policy policies/default-policy.toml --corpus fixtures/replay-corpus.json

@@ -1,0 +1,15 @@
+edge joined=FALSE boundary=AtLineStart dest=LineEnded | FlushFails | joined=FALSE boundary=Torn dest=LineEnded
+edge joined=FALSE boundary=AtLineStart dest=LineEnded | WriteFailsEmpty | joined=FALSE boundary=Torn dest=LineEnded
+edge joined=FALSE boundary=AtLineStart dest=LineEnded | WriteSucceeds | joined=FALSE boundary=AtLineStart dest=LineEnded
+edge joined=FALSE boundary=AtLineStart dest=LineEnded | WriteTears | joined=FALSE boundary=Torn dest=Partial
+edge joined=FALSE boundary=Torn dest=LineEnded | FlushFails | joined=FALSE boundary=Torn dest=LineEnded
+edge joined=FALSE boundary=Torn dest=LineEnded | RepairFails | joined=FALSE boundary=Torn dest=LineEnded
+edge joined=FALSE boundary=Torn dest=LineEnded | WriteFailsEmpty | joined=FALSE boundary=Torn dest=LineEnded
+edge joined=FALSE boundary=Torn dest=LineEnded | WriteSucceeds | joined=FALSE boundary=AtLineStart dest=LineEnded
+edge joined=FALSE boundary=Torn dest=LineEnded | WriteTears | joined=FALSE boundary=Torn dest=Partial
+edge joined=FALSE boundary=Torn dest=Partial | FlushFails | joined=FALSE boundary=Torn dest=LineEnded
+edge joined=FALSE boundary=Torn dest=Partial | RepairFails | joined=FALSE boundary=Torn dest=Partial
+edge joined=FALSE boundary=Torn dest=Partial | WriteFailsEmpty | joined=FALSE boundary=Torn dest=LineEnded
+edge joined=FALSE boundary=Torn dest=Partial | WriteSucceeds | joined=FALSE boundary=AtLineStart dest=LineEnded
+edge joined=FALSE boundary=Torn dest=Partial | WriteTears | joined=FALSE boundary=Torn dest=Partial
+init joined=FALSE boundary=AtLineStart dest=LineEnded

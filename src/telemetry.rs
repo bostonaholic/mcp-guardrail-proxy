@@ -156,10 +156,19 @@ pub fn emit_event(
     sink.emit(&redacted_event_value(event))
 }
 
-/// A writer and whether its last write left a partial line behind.
+/// Where the destination stands, mirrored from `specs/LineWriter.tla`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineBoundary {
+    /// The last line ended, so the next line can start.
+    AtLineStart,
+    /// A write failed, and it may have left a partial line behind.
+    Torn,
+}
+
+/// A writer and where its destination stands.
 struct LineState {
     writer: Box<dyn Write + Send>,
-    needs_newline: bool,
+    boundary: LineBoundary,
 }
 
 /// Writes whole lines to one destination; clones share the destination and its lock.
@@ -179,7 +188,7 @@ impl SharedLineWriter {
         Self {
             state: Arc::new(Mutex::new(LineState {
                 writer,
-                needs_newline: false,
+                boundary: LineBoundary::AtLineStart,
             })),
         }
     }
@@ -203,15 +212,15 @@ impl SharedLineWriter {
             .map_err(|_| ControlPlaneError::Unavailable("line writer lock poisoned".to_string()))?;
         let result = Self::write_locked(&mut state, line);
         if result.is_err() {
-            state.needs_newline = true;
+            state.boundary = LineBoundary::Torn;
         }
         Ok(result?)
     }
 
     fn write_locked(state: &mut LineState, line: &[u8]) -> io::Result<()> {
-        if state.needs_newline {
+        if state.boundary == LineBoundary::Torn {
             state.writer.write_all(b"\n")?;
-            state.needs_newline = false;
+            state.boundary = LineBoundary::AtLineStart;
         }
         let mut buffer = Vec::with_capacity(line.len() + 1);
         buffer.extend_from_slice(line);
@@ -261,6 +270,7 @@ impl AuditSink for JsonlAuditSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machines::spec_graph::{SpecGraph, tla_bool};
     use crate::protocol::{Decision, Severity};
     use crate::taint::TaintLevel;
     use serde_json::{Value, json};
@@ -452,5 +462,130 @@ mod tests {
         for (text, expected) in SECRET_ROWS {
             assert_eq!(redact_secrets(text), expected, "input {text:?}");
         }
+    }
+
+    /// How one scripted write attempt behaves.
+    #[derive(Clone, Copy)]
+    struct WriteScript {
+        repair_works: bool,
+        line_bytes: Option<usize>,
+        flush_works: bool,
+    }
+
+    /// A writer that follows a `WriteScript` and records what reached the destination.
+    #[derive(Clone)]
+    struct ScriptedWriter {
+        script: WriteScript,
+        landed: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for ScriptedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let accepted = if bytes == b"\n" {
+                usize::from(self.script.repair_works)
+            } else {
+                let accepted = self.script.line_bytes.unwrap_or(bytes.len());
+                self.script.line_bytes = self.script.line_bytes.map(|_| 0);
+                accepted
+            };
+            if accepted == 0 {
+                return Err(io::Error::other("the script fails this write"));
+            }
+            let mut landed = self.landed.lock().expect("buffer lock");
+            landed.extend_from_slice(&bytes[..accepted]);
+            Ok(accepted)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.script.flush_works {
+                Ok(())
+            } else {
+                Err(io::Error::other("the script fails this flush"))
+            }
+        }
+    }
+
+    /// The boundary the writer believes in, and what the destination's bytes show.
+    #[derive(Clone)]
+    struct Walked {
+        boundary: LineBoundary,
+        partial: bool,
+        joined: bool,
+    }
+
+    fn script_of(action: &str) -> WriteScript {
+        let working = WriteScript {
+            repair_works: true,
+            line_bytes: None,
+            flush_works: true,
+        };
+        match action {
+            "WriteSucceeds" => working,
+            "RepairFails" => WriteScript {
+                repair_works: false,
+                ..working
+            },
+            "WriteTears" => WriteScript {
+                line_bytes: Some(3),
+                ..working
+            },
+            "WriteFailsEmpty" => WriteScript {
+                line_bytes: Some(0),
+                ..working
+            },
+            "FlushFails" => WriteScript {
+                flush_works: false,
+                ..working
+            },
+            other => panic!("unknown action {other}"),
+        }
+    }
+
+    /// Runs one real `write_line` from `walked` and reads the outcome off the destination.
+    fn apply_write(walked: &mut Walked, action: &str) {
+        let landed = Arc::new(Mutex::new(Vec::new()));
+        let writer = ScriptedWriter {
+            script: script_of(action),
+            landed: landed.clone(),
+        };
+        let shared = SharedLineWriter {
+            state: Arc::new(Mutex::new(LineState {
+                writer: Box::new(writer),
+                boundary: walked.boundary,
+            })),
+        };
+        let _ = shared.write_line(b"audit line");
+        walked.boundary = shared.state.lock().expect("writer lock").boundary;
+        let bytes = landed.lock().expect("buffer lock").clone();
+        if let Some(last) = bytes.last() {
+            walked.joined |= walked.partial && bytes[0] != b'\n';
+            walked.partial = *last != b'\n';
+        }
+    }
+
+    #[test]
+    fn line_writer_matches_every_edge_of_the_spec() {
+        let graph = SpecGraph::parse(include_str!("../specs/graphs/LineWriter.graph"));
+        let walked = graph.walk(
+            Walked {
+                boundary: LineBoundary::AtLineStart,
+                partial: false,
+                joined: false,
+            },
+            |walked| {
+                let dest = if walked.partial {
+                    "Partial"
+                } else {
+                    "LineEnded"
+                };
+                vec![
+                    ("boundary", format!("{:?}", walked.boundary)),
+                    ("dest", dest.to_string()),
+                    ("joined", tla_bool(walked.joined)),
+                ]
+            },
+            |walked, step| apply_write(walked, step.action),
+        );
+        assert!(walked > 0);
     }
 }

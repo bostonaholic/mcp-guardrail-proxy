@@ -1,8 +1,7 @@
 //! The stdio interceptor: judges each host frame, audits it, and only then forwards it upstream.
 
-use std::future::Future;
+use std::future::{Future, pending};
 use std::io;
-use std::pin::pin;
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -10,14 +9,20 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
+use tokio::time::{Instant, sleep_until};
 
 use crate::control_plane::{ApprovalBroker, ApprovalOutcome, ApprovalRequest, AuditSink};
+use crate::machines::call::{CallEvent, CallPhase};
+use crate::machines::framer::{LineEnd, LineFramer};
+use crate::machines::session::{
+    SessionEffect, SessionEvent, SessionLifecycle, SessionOutcome, SessionPhase,
+};
+use crate::machines::splitter::LineSplitter;
 use crate::policy::{Evaluation, PolicyEngine};
 use crate::protocol::{
-    Decision, FrameError, GuardrailErrorData, INVALID_PARAMS_CODE, INVALID_REQUEST_CODE,
-    JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, McpCall, RequestId, Severity, classify_call,
-    encode_frame, guardrail_error_response, parse_error_response, parse_frame,
-    protocol_error_response,
+    FrameError, GuardrailErrorData, INVALID_PARAMS_CODE, INVALID_REQUEST_CODE, JsonRpcMessage,
+    JsonRpcRequest, JsonRpcResponse, McpCall, RequestId, Severity, classify_call, encode_frame,
+    guardrail_error_response, parse_error_response, parse_frame, protocol_error_response,
 };
 use crate::taint::SessionTaintState;
 use crate::telemetry::{
@@ -160,8 +165,16 @@ impl Interceptor {
         let sequence = self.sequence;
         let evaluation = self.engine.evaluate(call, &self.taint);
         let taint_chain = self.taint.taint_chain();
-        let (decision, reason, approved) = self.apply_approval(&evaluation, call, &taint_chain);
-        let forwarded = decision == Decision::Allow || approved;
+        let mut phase = CallPhase::Received.on(CallEvent::PolicyRuled(evaluation.decision));
+        let mut reason = evaluation.reason.clone();
+        if phase == CallPhase::AwaitingBroker {
+            let answer = self.ask_broker(&evaluation, call, &taint_chain);
+            if answer == ApprovalOutcome::Denied {
+                reason = format!("approval denied: {reason}");
+            }
+            phase = phase.on(CallEvent::BrokerAnswered(answer));
+        }
+        let ruling = phase.ruling();
         let event = SecurityAuditEvent {
             event: AuditEventKind::McpGuardrailAudit,
             timestamp_ms: unix_millis(),
@@ -169,21 +182,27 @@ impl Interceptor {
             sequence,
             method: method.to_string(),
             tool_name: call.tool_name().to_string(),
-            decision,
+            decision: ruling.decision,
             rule_id: evaluation.rule_id.clone(),
             severity: evaluation.severity,
             reason,
             taint_level: self.taint.level(),
             taint_chain,
-            forwarded,
+            forwarded: ruling.forward,
             latency_us: evaluation.latency_us,
             arguments: audited_arguments(call),
         };
-        if let Err(error) = emit_event(&*self.sink, &event) {
-            let fallback = if forwarded {
+        let emitted = emit_event(&*self.sink, &event);
+        let settled = phase.on(if emitted.is_ok() {
+            CallEvent::AuditRecorded
+        } else {
+            CallEvent::AuditFailed
+        });
+        if let Err(error) = emitted {
+            let fallback = if ruling.forward {
                 SecurityAuditEvent {
-                    decision: Decision::Deny,
-                    forwarded: false,
+                    decision: settled.ruling().decision,
+                    forwarded: settled.ruling().forward,
                     rule_id: AUDIT_SINK_FAILURE_RULE_ID.to_string(),
                     severity: Severity::Critical,
                     reason: format!("audit sink failed: {error}"),
@@ -195,7 +214,7 @@ impl Interceptor {
             self.write_audit_fallback(&fallback);
             return Err(error_data(fallback));
         }
-        if !forwarded {
+        if !settled.ruling().forward {
             return Err(error_data(event));
         }
         self.taint.record_forwarded(
@@ -207,36 +226,20 @@ impl Interceptor {
         Ok(())
     }
 
-    /// The decision and reason after the broker rules on a `RequireApproval`, and whether it approved.
-    fn apply_approval(
+    /// Puts a call that requires approval to the broker.
+    fn ask_broker(
         &self,
         evaluation: &Evaluation,
         call: &McpCall,
         taint_chain: &[String],
-    ) -> (Decision, String, bool) {
-        if evaluation.decision != Decision::RequireApproval {
-            return (evaluation.decision, evaluation.reason.clone(), false);
-        }
-        let request = ApprovalRequest {
+    ) -> ApprovalOutcome {
+        self.broker.request_approval(&ApprovalRequest {
             session_id: self.session_id.clone(),
             rule_id: evaluation.rule_id.clone(),
             tool_name: call.tool_name().to_string(),
             reason: evaluation.reason.clone(),
             taint_chain: taint_chain.to_vec(),
-        };
-        match self.broker.request_approval(&request) {
-            ApprovalOutcome::Approved => {
-                (Decision::RequireApproval, evaluation.reason.clone(), true)
-            }
-            ApprovalOutcome::Denied => (
-                Decision::Deny,
-                format!("approval denied: {}", evaluation.reason),
-                false,
-            ),
-            ApprovalOutcome::Pending => {
-                (Decision::RequireApproval, evaluation.reason.clone(), false)
-            }
-        }
+        })
     }
 
     /// Records on stderr the event of a call whose audit emit failed.
@@ -336,17 +339,22 @@ pub async fn run_proxy_with_io<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         stderr.clone(),
     );
     let (queue, queued_lines) = mpsc::channel(WRITER_QUEUE_LINES);
-    let (session, written) = tokio::join!(
-        run_session(&mut child, interceptor, host_in, pipes, queue, &stderr),
-        write_host_output(queued_lines, host_out),
-    );
-    written?;
-    let (status, input_end) = session?;
-    match input_end {
-        InputEnd::ForwardFailed => Err(ProxyError::ChildExited(status.code())),
-        InputEnd::ReadFailed(error) => Err(ProxyError::Io(error)),
-        InputEnd::HostEof | InputEnd::ChildExitedFirst | InputEnd::HostOutputClosed => Ok(status),
-    }
+    let tasks = SessionTasks {
+        input: Some(Box::pin(read_host_input(
+            host_in,
+            pipes.stdin,
+            interceptor,
+            queue.clone(),
+        ))),
+        relays: Some(Box::pin(relay_child_output(
+            pipes.stdout,
+            pipes.stderr,
+            queue,
+            &stderr,
+        ))),
+        writer: Some(Box::pin(write_host_output(queued_lines, host_out))),
+    };
+    run_session(&mut child, tasks, &stderr).await
 }
 
 fn spawn_upstream(command: &[String]) -> Result<Child, ProxyError> {
@@ -385,105 +393,163 @@ impl ChildPipes {
     }
 }
 
-/// Why the proxy stopped reading host input.
-enum InputEnd {
-    HostEof,
-    ChildExitedFirst,
-    ForwardFailed,
-    HostOutputClosed,
-    ReadFailed(io::Error),
+/// The session's running tasks; a task is dropped, or finished, when its slot is empty.
+///
+/// The input task and the relays hold the only queue senders, so the writer's queue closes
+/// once both slots are empty.
+struct SessionTasks<I, R, W> {
+    input: Option<I>,
+    relays: Option<R>,
+    writer: Option<W>,
 }
 
-/// Runs host input, the child, and both relays until the child is gone and its output drained.
-///
-/// Every queue sender lives in a future owned here, so the writer's queue closes on return.
-async fn run_session<R: AsyncRead + Unpin>(
+/// The faults behind a [`SessionOutcome`].
+#[derive(Default)]
+struct SessionFaults {
+    status: Option<ExitStatus>,
+    host_input: Option<io::Error>,
+    host_output: Option<io::Error>,
+    child_wait: Option<io::Error>,
+}
+
+impl SessionFaults {
+    fn into_result(self, outcome: SessionOutcome) -> Result<ExitStatus, ProxyError> {
+        const PROVEN: &str = "SessionLifecycle: each outcome has what it reports";
+        match outcome {
+            SessionOutcome::Clean => Ok(self.status.expect(PROVEN)),
+            SessionOutcome::ChildRefusedInput => {
+                Err(ProxyError::ChildExited(self.status.expect(PROVEN).code()))
+            }
+            SessionOutcome::HostInputFailed => Err(self.host_input.expect(PROVEN).into()),
+            SessionOutcome::HostOutputFailed => Err(self.host_output.expect(PROVEN).into()),
+            SessionOutcome::ChildWaitFailed => Err(self.child_wait.expect(PROVEN).into()),
+        }
+    }
+}
+
+/// Runs the tasks until `SessionLifecycle` finishes. The machine decides; this loop only turns
+/// task completions into events and carries out the effects.
+async fn run_session<I, R, W>(
     child: &mut Child,
-    interceptor: Interceptor,
-    host_in: R,
-    pipes: ChildPipes,
-    queue: mpsc::Sender<Vec<u8>>,
+    mut tasks: SessionTasks<I, R, W>,
     stderr: &SharedLineWriter,
-) -> io::Result<(ExitStatus, InputEnd)> {
-    let mut relays = pin!(relay_child_output(
-        pipes.stdout,
-        pipes.stderr,
-        queue.clone(),
-        stderr
-    ));
-    let mut relays_done = false;
-    let mut lifecycle = pin!(supervise_child(
-        child,
-        read_host_input(host_in, pipes.stdin, interceptor, queue)
-    ));
-    let end = loop {
-        tokio::select! {
-            end = &mut lifecycle => break end,
-            () = &mut relays, if !relays_done => relays_done = true,
+) -> Result<ExitStatus, ProxyError>
+where
+    I: Future<Output = io::Result<SessionEvent>> + Unpin,
+    R: Future<Output = ()> + Unpin,
+    W: Future<Output = io::Result<()>> + Unpin,
+{
+    let mut session = SessionLifecycle::new();
+    let mut faults = SessionFaults::default();
+    let mut deadline = None;
+    loop {
+        let event = tokio::select! {
+            ended = run_to_end(&mut tasks.input) => ended.unwrap_or_else(|error| {
+                faults.host_input = Some(error);
+                SessionEvent::HostReadFailed
+            }),
+            () = run_to_end(&mut tasks.relays) => SessionEvent::RelaysFinished,
+            written = run_to_end(&mut tasks.writer) => match written {
+                Ok(()) => SessionEvent::WriterDrained,
+                Err(error) => {
+                    faults.host_output = Some(error);
+                    SessionEvent::WriterFailed
+                }
+            },
+            waited = child.wait(), if session.child_running() => match waited {
+                Ok(status) => {
+                    faults.status = Some(status);
+                    SessionEvent::ChildExited
+                }
+                Err(error) => {
+                    faults.child_wait = Some(error);
+                    SessionEvent::ChildWaitFailed
+                }
+            },
+            () = expire(deadline) => SessionEvent::TimerElapsed,
+        };
+        let phase_before = session.phase();
+        match session.on(event) {
+            SessionEffect::None => {}
+            SessionEffect::StopInput => tasks.input = None,
+            SessionEffect::KillChild => kill_child(child, &mut session, &mut faults),
+            SessionEffect::StopInputAndKill => {
+                tasks.input = None;
+                kill_child(child, &mut session, &mut faults);
+            }
+            SessionEffect::AbandonRelays => {
+                tasks.relays = None;
+                write_diagnostic(stderr, PIPE_STILL_OPEN_DIAGNOSTIC);
+            }
         }
-    };
-    let drained = relays_done || tokio::time::timeout(PIPE_DRAIN_GRACE, relays).await.is_ok();
-    if !drained {
-        write_diagnostic(stderr, PIPE_STILL_OPEN_DIAGNOSTIC);
+        if let Some(outcome) = session.outcome() {
+            return faults.into_result(outcome);
+        }
+        if session.phase() != phase_before {
+            deadline = phase_time_limit(session.phase()).map(|limit| Instant::now() + limit);
+        }
     }
-    end
 }
 
-/// Ends the session at whichever comes first, host input ending or the child exiting.
-///
-/// Host input pends forever while the host holds it open, so a child exit drops it mid-read.
-async fn supervise_child(
-    child: &mut Child,
-    host_input: impl Future<Output = InputEnd>,
-) -> io::Result<(ExitStatus, InputEnd)> {
-    let input_end = tokio::select! {
-        input_end = host_input => input_end,
-        status = child.wait() => return Ok((status?, InputEnd::ChildExitedFirst)),
+/// Awaits the task in `slot` and empties the slot; an empty slot pends forever.
+async fn run_to_end<T: Future + Unpin>(slot: &mut Option<T>) -> T::Output {
+    let Some(task) = slot else {
+        return pending().await;
     };
-    let status = match input_end {
-        InputEnd::HostOutputClosed => {
-            child.kill().await?;
-            child.wait().await?
-        }
-        _ => wait_or_kill(child).await?,
-    };
-    Ok((status, input_end))
+    let output = task.await;
+    *slot = None;
+    output
 }
 
-async fn wait_or_kill(child: &mut Child) -> io::Result<ExitStatus> {
-    match tokio::time::timeout(CHILD_EXIT_GRACE, child.wait()).await {
-        Ok(status) => status,
-        Err(_elapsed) => {
-            child.kill().await?;
-            child.wait().await
-        }
+/// Sleeps until `deadline`; without one, pends forever.
+async fn expire(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => sleep_until(deadline).await,
+        None => pending().await,
     }
 }
 
-/// Reads host frames, judges each, and forwards it or queues its reply.
+/// How long the session may stay in `phase`, for the phases that have a timer.
+fn phase_time_limit(phase: SessionPhase) -> Option<Duration> {
+    match phase {
+        SessionPhase::ExitGrace => Some(CHILD_EXIT_GRACE),
+        SessionPhase::Draining => Some(PIPE_DRAIN_GRACE),
+        SessionPhase::Relaying
+        | SessionPhase::Killing
+        | SessionPhase::Flushing
+        | SessionPhase::Finished => None,
+    }
+}
+
+/// Sends the kill; a failure counts as losing the child, which `kill_on_drop` then covers.
+fn kill_child(child: &mut Child, session: &mut SessionLifecycle, faults: &mut SessionFaults) {
+    if let Err(error) = child.start_kill() {
+        faults.child_wait = Some(error);
+        session.on(SessionEvent::ChildWaitFailed);
+    }
+}
+
+/// Reads host frames, judges each, and forwards it or queues its reply, until input ends.
 ///
-/// Returning drops `child_stdin`, which is the child's EOF.
+/// Returning drops `child_stdin`, which is the child's EOF. A write to the child can block
+/// here for as long as the child does not read; the session drops this task when it must stop.
 async fn read_host_input<R: AsyncRead + Unpin>(
     host_in: R,
     mut child_stdin: ChildStdin,
     mut interceptor: Interceptor,
     queue: mpsc::Sender<Vec<u8>>,
-) -> InputEnd {
+) -> io::Result<SessionEvent> {
     let mut reader = BufReader::new(host_in);
-    let mut line = Vec::new();
+    let mut framer = LineFramer::new(MAX_FRAME_BYTES);
     loop {
-        let read = tokio::select! {
-            read = read_capped_line(&mut reader, &mut line) => read,
-            () = queue.closed() => return InputEnd::HostOutputClosed,
-        };
-        let verdict = match read {
-            Err(error) => return InputEnd::ReadFailed(error),
-            Ok(CappedLine::Eof) => return InputEnd::HostEof,
-            Ok(CappedLine::Oversize) => Verdict::Reply(invalid_request(&format!(
+        let verdict = match read_capped_line(&mut reader, &mut framer).await? {
+            LineEnd::Eof => return Ok(SessionEvent::HostEof),
+            LineEnd::Oversize => Verdict::Reply(invalid_request(&format!(
                 "frame exceeds {MAX_FRAME_BYTES} bytes"
             ))),
-            Ok(CappedLine::Complete) => {
-                let frame = line.strip_suffix(b"\r").unwrap_or(&line);
+            LineEnd::Complete => {
+                let line = framer.line();
+                let frame = line.strip_suffix(b"\r").unwrap_or(line);
                 if frame.is_empty() {
                     continue;
                 }
@@ -498,12 +564,13 @@ async fn read_host_input<R: AsyncRead + Unpin>(
                 let mut bytes = frame.into_bytes();
                 bytes.push(b'\n');
                 if child_stdin.write_all(&bytes).await.is_err() {
-                    return InputEnd::ForwardFailed;
+                    return Ok(SessionEvent::ForwardFailed);
                 }
             }
             Verdict::Reply(response) => {
                 if queue.send(encode_reply(response)).await.is_err() {
-                    return InputEnd::HostOutputClosed;
+                    // The writer is gone, so the session is about to drop this task.
+                    return pending().await;
                 }
             }
         }
@@ -514,56 +581,26 @@ fn encode_reply(response: JsonRpcResponse) -> Vec<u8> {
     encode_frame(&JsonRpcMessage::Response(response)).into_bytes()
 }
 
-/// The outcome of reading one line of at most `MAX_FRAME_BYTES`.
-enum CappedLine {
-    /// The line, without its `\n`, is in the caller's buffer. A final line may lack the `\n`.
-    Complete,
-    /// The line was longer than the cap; its bytes were discarded through the next `\n`.
-    Oversize,
-    /// The stream ended with no further bytes.
-    Eof,
-}
-
-/// Reads one line into `line`, never holding more than `MAX_FRAME_BYTES` of it in memory.
+/// Reads through the end of the next line, never holding more than the framer's cap of it.
 async fn read_capped_line<R: AsyncBufRead + Unpin>(
     reader: &mut R,
-    line: &mut Vec<u8>,
-) -> io::Result<CappedLine> {
-    line.clear();
-    let mut started = false;
-    let mut oversize = false;
+    framer: &mut LineFramer,
+) -> io::Result<LineEnd> {
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            return Ok(match (started, oversize) {
-                (false, _) => CappedLine::Eof,
-                (true, true) => CappedLine::Oversize,
-                (true, false) => CappedLine::Complete,
-            });
+            return Ok(framer.finish());
         }
-        started = true;
-        let newline = available.iter().position(|byte| *byte == b'\n');
-        let content = &available[..newline.unwrap_or(available.len())];
-        if !oversize {
-            if line.len() + content.len() > MAX_FRAME_BYTES {
-                oversize = true;
-                line.clear();
-            } else {
-                line.extend_from_slice(content);
-            }
-        }
-        let consumed = content.len() + usize::from(newline.is_some());
+        let (consumed, end) = framer.push(available);
         reader.consume(consumed);
-        if newline.is_some() {
-            return Ok(if oversize {
-                CappedLine::Oversize
-            } else {
-                CappedLine::Complete
-            });
+        if let Some(end) = end {
+            return Ok(end);
         }
     }
 }
 
+/// Relays both child pipes. This future holds its queue sender until both relays end, so the
+/// writer's queue cannot close while either one runs, as `WriterDrains` in the spec requires.
 async fn relay_child_output(
     stdout: ChildStdout,
     child_stderr: ChildStderr,
@@ -571,7 +608,7 @@ async fn relay_child_output(
     stderr: &SharedLineWriter,
 ) {
     tokio::join!(
-        relay_child_stdout(stdout, queue, stderr),
+        relay_child_stdout(stdout, &queue, stderr),
         relay_child_stderr(child_stderr, stderr),
     );
 }
@@ -579,18 +616,18 @@ async fn relay_child_output(
 /// Queues each child stdout line, as raw bytes, for host output.
 async fn relay_child_stdout(
     stdout: ChildStdout,
-    queue: mpsc::Sender<Vec<u8>>,
+    queue: &mpsc::Sender<Vec<u8>>,
     stderr: &SharedLineWriter,
 ) {
     let mut reader = BufReader::new(stdout);
-    let mut line = Vec::new();
+    let mut framer = LineFramer::new(MAX_FRAME_BYTES);
     loop {
-        let host_line = match read_capped_line(&mut reader, &mut line).await {
-            Ok(CappedLine::Complete) => std::mem::take(&mut line),
-            Ok(CappedLine::Oversize) => encode_reply(invalid_request(&format!(
+        let host_line = match read_capped_line(&mut reader, &mut framer).await {
+            Ok(LineEnd::Complete) => framer.take_line(),
+            Ok(LineEnd::Oversize) => encode_reply(invalid_request(&format!(
                 "upstream line exceeds {MAX_FRAME_BYTES} bytes"
             ))),
-            Ok(CappedLine::Eof) => return,
+            Ok(LineEnd::Eof) => return,
             Err(error) => {
                 write_diagnostic(
                     stderr,
@@ -610,7 +647,8 @@ async fn relay_child_stdout(
 /// Bytes pass through unchanged, so a split can cut a multi-byte UTF-8 character.
 async fn relay_child_stderr(child_stderr: ChildStderr, stderr: &SharedLineWriter) {
     let mut reader = BufReader::new(child_stderr);
-    let mut pending = Vec::new();
+    let mut splitter = LineSplitter::new(MAX_STDERR_LINE_BYTES);
+    let mut relay = |line: &[u8]| write_relayed_line(stderr, line);
     loop {
         let available = match reader.fill_buf().await {
             Ok(available) => available,
@@ -623,28 +661,11 @@ async fn relay_child_stderr(child_stderr: ChildStderr, stderr: &SharedLineWriter
             }
         };
         if available.is_empty() {
-            if !pending.is_empty() {
-                write_relayed_line(stderr, &pending);
-            }
+            splitter.finish(&mut relay);
             return;
         }
-        let newline = available.iter().position(|byte| *byte == b'\n');
-        let mut content = &available[..newline.unwrap_or(available.len())];
-        let consumed = content.len() + usize::from(newline.is_some());
-        while !content.is_empty() {
-            if pending.len() == MAX_STDERR_LINE_BYTES {
-                write_relayed_line(stderr, &pending);
-                pending.clear();
-            }
-            let room = MAX_STDERR_LINE_BYTES - pending.len();
-            let (part, rest) = content.split_at(room.min(content.len()));
-            pending.extend_from_slice(part);
-            content = rest;
-        }
-        if newline.is_some() {
-            write_relayed_line(stderr, &pending);
-            pending.clear();
-        }
+        let consumed = available.len();
+        splitter.push(available, &mut relay);
         reader.consume(consumed);
     }
 }
