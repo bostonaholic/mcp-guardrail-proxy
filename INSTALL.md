@@ -13,6 +13,8 @@ Two kinds of failure end only one row of the approved table, not the run:
 
 Every other failure stops the run.
 
+A path placeholder in a command, such as `<file>`, `<record>`, or a `--policy` path, is a full path. Replace a leading `~` with the value of `$HOME`. A shell does not expand `~` inside quotes, so `'~/.cursor/mcp.json'` names no file.
+
 You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 
 1. Run `cargo --version`. If `cargo` is absent, stop and tell the user to install Rust from <https://rustup.rs>. If the version is below 1.85, stop and tell the user to run `rustup update`.
@@ -145,7 +147,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 
    `<command>` is the upstream command from step 5. Put all of the old `args` after it. If the old entry has no `args`, end the list at `<command>`. To keep a custom policy for this row, put `"--policy"` and its absolute path before `"--"`.
 
-   For each row, do these steps:
+   For each row, do these steps. `<file>` is the full path of the row's config file.
 
    1. Back up the file before the row's write to it, with `command cp -pf '<file>' '<file>.bak-guardrail'`. `command` skips a `cp -i` alias, and `-p` keeps the file mode. The backup holds the file from right before the latest write.
    2. Write the row with the writer in its client reference row.
@@ -169,7 +171,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
      `<<'JSON'` turns off shell expansion, so the entry needs only JSON escapes. If `add-json` fails, add the old entry back the same way, as step 5 read it, and report the row.
    - Claude Code, local scope. Run the same two commands with `--scope local`, in the project folder of the entry.
    - Codex. Edit `~/.codex/config.toml` in place. In `[mcp_servers.<name>]`, change only the values of `command` and `args`. If the table has no `args`, add it on the line after `command`. Do not touch any other key or subtable, such as `cwd`, `enabled`, or `[mcp_servers.<name>.env]`. Write each value as a TOML basic string, with `"` and `\` escaped. Then re-parse with `codex mcp get '<name>' --json > /dev/null`. If `codex` is not on `PATH`, re-parse with `python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' ~/.codex/config.toml`, which needs Python 3.11 or later. If the re-parse fails, or neither command can run, restore the file with `command cp -f ~/.codex/config.toml.bak-guardrail ~/.codex/config.toml` and report the row.
-   - Claude Code plugin. Never edit a plugin's own files, because a plugin update undoes the edit. Move the plugin's servers to user scope in its place, and record the move in `~/.local/state/mcp-guardrail/plugin-moves.json`. The record is one JSON object. Each key is `<plugin>@<marketplace>`, and its value lists the server names that the move added. This writer changes `~/.claude.json`, `~/.claude/settings.json`, and the record, so back up all three first. Skip the record backup when the record does not exist.
+   - Claude Code plugin. Never edit a plugin's own files, because a plugin update undoes the edit. Move the plugin's servers to user scope in its place, and record the move in `~/.local/state/mcp-guardrail/plugin-moves.json`. `<record>` is the full path of that file. The record is one JSON object. Each key is `<plugin>@<marketplace>`, and its value lists the server names that the move added. This writer changes `~/.claude.json`, `~/.claude/settings.json`, and the record, so back up all three first. Skip the record backup when the record does not exist.
      1. If the record does not exist, write it as `{}`. Add the plugin's key with the value `[]`. Re-parse the record with `python3 -m json.tool`. If that fails, restore the record with `command cp -f`, report the row, and run no `claude` command for it.
      2. Run `claude plugin disable '<plugin>@<marketplace>' --scope user`.
      3. For each server of the plugin, run `claude mcp add-json` at user scope, as for a user-scope row. Wrap a stdio server. Add a remote server as it is.
@@ -187,7 +189,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 
    1. Probe each row that has no `probe not run` note. Build the probe from the row's new `args`:
       - The upstream is every token after the first `--`.
-      - A `--policy <file>` or `--policy=<file>` before that `--` becomes `--policy '<file>'` in the probe. Leave out `--audit-log` and `--session-id`, because `probe` takes neither.
+      - A `--policy <file>` or `--policy=<file>` before that `--` becomes `--policy '<file>'` in the probe, with `<file>` as the full path of the policy. Leave out `--audit-log` and `--session-id`, because `probe` takes neither.
       - Add `cd -- '<cwd>' &&` only when the entry has `cwd`. Add `env -- 'NAME=<value>'...` only when it has `env`.
 
       ```sh
@@ -221,7 +223,7 @@ xattr -dr com.apple.quarantine ~/.local/bin/mcp-guardrail-proxy
 
 ## Client reference
 
-Step 5 reads these files. "Tested" says where the facts in a row come from. A row marked "no" comes from the client's documentation, read on 2026-11-07, and nobody has wired that client with these steps. Check its documentation before you rely on the row.
+Step 5 reads these files. "Tested" says where the facts in a row come from. A row marked "no" comes from the client's documentation, read on 2026-11-07, and nobody has wired that client with these steps. Check its documentation before you rely on the row. `<file>` in a command of this table is the full path of the row's config file.
 
 | Client | Config file | Where servers live | Writer | Re-parse | Restart | Tested |
 |---|---|---|---|---|---|---|
@@ -245,7 +247,7 @@ Undo needs no backup. It rebuilds each original entry from its wrapped entry, so
 2. Rebuild each row. The new `command` is the first token after the first `--` in `args`. The new `args` is every token after that one, or `[]` when there is none. Keep every other key as it is now.
 3. Write each row:
    - Claude Code, user or local scope: read the entry from `~/.claude.json`, but never write that file. Run `claude mcp remove '<name>' --scope <scope>`. Then run `claude mcp add-json` with the rebuilt entry through the heredoc of step 6, with the same `--scope`. For local scope, run both commands in the project folder of the entry. If that folder no longer exists, report `project folder gone` with its path, and change nothing in the row. If `add-json` fails, add the wrapped entry back as you read it, and report the row.
-   - Codex and the JSON clients: back up the file with `command cp -pf '<file>' '<file>.bak-guardrail'`. Set `command` and `args` of the row to the rebuilt values. Re-parse the file with the command in its client reference row. If the re-parse fails, run `command cp -f '<file>.bak-guardrail' '<file>'` and report the row.
+   - Codex and the JSON clients: back up the file with `command cp -pf '<file>' '<file>.bak-guardrail'`, with `<file>` as the full path of the row's config file. Set `command` and `args` of the row to the rebuilt values. Re-parse the file with the command in its client reference row. If the re-parse fails, run `command cp -f '<file>.bak-guardrail' '<file>'` and report the row.
 4. Undo each plugin move that the request covers, one record key at a time:
    1. Run `claude plugin enable '<plugin>@<marketplace>' --scope user`. If it fails, stop for this plugin, keep its key, and report it.
    2. Run `claude mcp remove '<name>' --scope user` for each name in the key. Report a name that is no longer there.
@@ -311,5 +313,5 @@ Do these steps in order. Ask no question.
    rm -rf "$HOME/.local/state/mcp-guardrail"
    ```
 
-8. For each config file in the client reference for this platform, and for `~/.claude/settings.json`, remove `<file>.bak-guardrail` if it exists. Use `command rm -f -- '<file>.bak-guardrail'`.
+8. For each config file in the client reference for this platform, and for `~/.claude/settings.json`, remove `<file>.bak-guardrail` if it exists. Use `command rm -f -- '<file>.bak-guardrail'`, with `<file>` as the full path of the config file.
 9. Run `cargo uninstall tauri-cli` only when the user's request names `tauri-cli`.
