@@ -206,7 +206,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
       5. Go to the next row.
 
       A server that holds a lock file or a port can fail its probe while a client runs its own copy of it. Name this as one possible cause when the user has the client open.
-   4. For each Claude Code row, run `claude mcp get '<name>'`. It reports if the server connects.
+   4. For each Claude Code row, run `claude mcp get '<name>'`. It reports if the server connects. For a local-scope row, run it in the project folder of the entry. From another folder, it reports a user-scope server with the same name, or that the server is not found.
    5. Give the final report. List each wired row with its probe result, or the reason no probe ran. List the tools that the probe shows as `deny` or `require-approval` in a tainted session. Name the rows that have only probe evidence, and the clients to restart, with the restart from the client reference. For Claude Code, say that a new session is necessary, because the current session keeps the old server.
 
 The binary embeds `policies/default-policy.toml`. To change the rules, copy that file, edit the copy, and pass it with `--policy`. Run `check-policy --policy <file>` on the edited copy before you wire it in.
@@ -228,7 +228,7 @@ Step 5 reads these files. "Tested" says where the facts in a row come from. A ro
 | Client | Config file | Where servers live | Writer | Re-parse | Restart | Tested |
 |---|---|---|---|---|---|---|
 | Claude Code, user scope | `~/.claude.json`, macOS and Linux | top-level `mcpServers` | `claude mcp remove`, then `claude mcp add-json`, with `--scope user` | the `claude` CLI checks the entry; `claude mcp get '<name>'` reports the connection | start a new session | yes, install transcript |
-| Claude Code, local scope | `~/.claude.json`, macOS and Linux | `projects.<project path>.mcpServers` | the same two commands with `--scope local`, run in the project folder | the same | start a new session in that folder | yes, install transcript |
+| Claude Code, local scope | `~/.claude.json`, macOS and Linux | `projects.<project path>.mcpServers` | the same two commands with `--scope local`, run in the project folder | the same, run in the project folder | start a new session in that folder | yes, install transcript |
 | Claude Code, plugin | the plugin's `installPath` from `claude plugin list --json`, for entries with `"scope": "user"`. The servers are in `<installPath>/.mcp.json`, at its top level or under `mcpServers`, or under `mcpServers` in `<installPath>/.claude-plugin/plugin.json`. | as in the file | the plugin writer in step 6 | `python3 -m json.tool` for the record | start a new session | yes, install transcript. These paths are Claude Code internals that can change. A server list in another shape makes its rows `malformed`. |
 | Codex | `~/.codex/config.toml`, macOS and Linux | `[mcp_servers.<name>]`, with `enabled = false` for a disabled server | the TOML recipe in step 6 | `codex mcp get '<name>' --json > /dev/null` | start a new session | yes, install transcript |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json`, macOS only | `mcpServers` | the JSON writer in step 6 | `python3 -m json.tool '<file>' > /dev/null` | quit and reopen | no, from the client's documentation |
@@ -264,7 +264,7 @@ Do these steps in order when the user asks for an upgrade.
 2. Run the step 5 scan. Probe each `already wrapped` row by the rules of step 7. A failed probe gets the step 7 actions.
 3. If `<BIN>` changed, re-wire each `already wrapped` row whose `command` is not the new `<BIN>`. A switch between `cargo install` and the prebuilt binary changes `<BIN>`.
    - Set only `command` to the new `<BIN>`. Keep `args`, `env`, `cwd`, and every other key.
-   - Write the row with its writer from the client reference, and back up the file first. A Claude Code row gets `claude mcp remove`, then `claude mcp add-json` with the entry as read and the new `command`.
+   - Write the row with its writer from the client reference, and back up the file first. A Claude Code row gets `claude mcp remove`, then `claude mcp add-json` with the entry as read and the new `command`. For a local-scope row, run both commands in the project folder of the entry.
    - For a local-scope row whose project folder is gone, report `project folder gone`, and do not re-wire it.
    - The server names do not change, so the plugin move record stays valid.
 4. On macOS, upgrade the app: run step 4 again from step 4.1. If step 4.1 picks the current clone, it does not pull it. Then say in the report that you did not pull that clone. Tell the user to pull it and ask for the upgrade again to get a newer app.
