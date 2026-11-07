@@ -10,6 +10,10 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 - Downloadable desktop app for macOS and Linux on each GitHub release.
 - Windows shells in the default shell rules.
 
+### Fixed
+
+- The proxy now exits when writing to the host fails while the upstream server has stopped reading its input. It used to hang until the server exited.
+
 ## 0.1.0 - 2026-11-05
 
 ### Added
