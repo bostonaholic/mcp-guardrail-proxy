@@ -61,6 +61,7 @@ function showSettings(view) {
   byId("path-save").disabled = view.path_from_variable;
   byId("path-variable-note").hidden = !view.path_from_variable;
   byId("notifications").checked = view.notifications;
+  showBanner(byId("settings-problem"), view.problem);
 }
 
 async function loadSettings() {
