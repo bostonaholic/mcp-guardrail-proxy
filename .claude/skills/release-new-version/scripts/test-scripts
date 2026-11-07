@@ -114,17 +114,19 @@ expect_fail "render-release-notes rejects no version" "$SCRIPTS/render-release-n
 assets() {
   local name
   {
-    for name in macos-arm64.dmg macos-x86_64.dmg linux-x86_64.deb linux-x86_64.rpm linux-x86_64.AppImage \
-      linux-arm64.deb linux-arm64.rpm linux-arm64.AppImage; do
+    for name in macos-arm64.dmg macos-x86_64.dmg macos-arm64.app.tar.gz macos-x86_64.app.tar.gz \
+      linux-x86_64.deb linux-x86_64.rpm linux-x86_64.AppImage linux-arm64.deb linux-arm64.rpm \
+      linux-arm64.AppImage; do
       echo "mcp-guardrail-desktop-1.2.3-$name"
     done
+    echo "mcp-guardrail-desktop-update.json"
     for name in macos-arm64 macos-x86_64 linux-x86_64 linux-arm64; do
       echo "mcp-guardrail-proxy-1.2.3-$name.tar.gz"
     done
   } | jq -R '{name: ., size: 10}' | jq -s '{assets: .}'
 }
 check() { "$SCRIPTS/check-release-assets" 1.2.3; }
-assets | check | grep -qx 'ok 12 assets' && ok "check-release-assets accepts the full set" ||
+assets | check | grep -qx 'ok 15 assets' && ok "check-release-assets accepts the full set" ||
   bad "check-release-assets accepts the full set"
 expect_fail "check-release-assets rejects a missing file" bash -c \
   "jq 'del(.assets[0])' <<<'$(assets)' | '$SCRIPTS/check-release-assets' 1.2.3"
@@ -140,5 +142,45 @@ expect_fail "check-release-assets rejects no assets" bash -c \
   "echo '{\"assets\":[]}' | '$SCRIPTS/check-release-assets' 1.2.3"
 expect_fail "check-release-assets rejects bad JSON" bash -c \
   "echo nope | '$SCRIPTS/check-release-assets' 1.2.3"
+
+# render-update-manifest
+# Fixture signature files are longer than 57 bytes, so a wrapped base64 line would show.
+fixture_sig() { printf 'untrusted comment: fixture signature\nRWQ%s\ntrusted comment: fixture\n' "$1"; }
+mkdir -p "$work/sig"
+for name in macos-arm64.app.tar.gz macos-x86_64.app.tar.gz linux-x86_64.AppImage linux-arm64.AppImage; do
+  fixture_sig "${name%%.*}" > "$work/sig/mcp-guardrail-desktop-1.2.3-$name.minisig"
+done
+download='https://github.com/bostonaholic/mcp-guardrail-proxy/releases/download/v1.2.3'
+manifest="$("$SCRIPTS/render-update-manifest" 1.2.3 "$work/sig" 2>&1)"
+jq -e --arg d "$download" '
+  .version == "1.2.3" and
+  (.platforms | keys) == ["darwin-aarch64", "darwin-x86_64", "linux-aarch64", "linux-x86_64"] and
+  .platforms["darwin-aarch64"].url == "\($d)/mcp-guardrail-desktop-1.2.3-macos-arm64.app.tar.gz" and
+  .platforms["darwin-x86_64"].url == "\($d)/mcp-guardrail-desktop-1.2.3-macos-x86_64.app.tar.gz" and
+  .platforms["linux-x86_64"].url == "\($d)/mcp-guardrail-desktop-1.2.3-linux-x86_64.AppImage" and
+  .platforms["linux-aarch64"].url == "\($d)/mcp-guardrail-desktop-1.2.3-linux-arm64.AppImage" and
+  .platforms["darwin-aarch64"].signature == "dW50cnVzdGVkIGNvbW1lbnQ6IGZpeHR1cmUgc2lnbmF0dXJlClJXUW1hY29zLWFybTY0CnRydXN0ZWQgY29tbWVudDogZml4dHVyZQo=" and
+  .platforms["darwin-x86_64"].signature == "dW50cnVzdGVkIGNvbW1lbnQ6IGZpeHR1cmUgc2lnbmF0dXJlClJXUW1hY29zLXg4Nl82NAp0cnVzdGVkIGNvbW1lbnQ6IGZpeHR1cmUK" and
+  .platforms["linux-x86_64"].signature == "dW50cnVzdGVkIGNvbW1lbnQ6IGZpeHR1cmUgc2lnbmF0dXJlClJXUWxpbnV4LXg4Nl82NAp0cnVzdGVkIGNvbW1lbnQ6IGZpeHR1cmUK" and
+  .platforms["linux-aarch64"].signature == "dW50cnVzdGVkIGNvbW1lbnQ6IGZpeHR1cmUgc2lnbmF0dXJlClJXUWxpbnV4LWFybTY0CnRydXN0ZWQgY29tbWVudDogZml4dHVyZQo="
+' <<<"$manifest" >/dev/null && ok "render-update-manifest prints keys, urls, signatures" ||
+  bad "render-update-manifest prints keys, urls, signatures: $manifest"
+
+# A missing script exits 127, so these cases check for exit 1, not just a failure.
+expect_exit1() { local name="$1"; shift; "$@" >/dev/null 2>&1; [ $? -eq 1 ] && ok "$name" || bad "$name"; }
+
+cp -R "$work/sig" "$work/sig-missing"
+missing="$work/sig-missing/mcp-guardrail-desktop-1.2.3-linux-arm64.AppImage.minisig"
+rm "$missing"
+err="$("$SCRIPTS/render-update-manifest" 1.2.3 "$work/sig-missing" 2>&1 >/dev/null)"
+status=$?
+[ "$status" -eq 1 ] && grep -qF "$missing" <<<"$err" && ok "render-update-manifest names a missing file" ||
+  bad "render-update-manifest names a missing file: exit $status: $err"
+
+cp -R "$work/sig" "$work/sig-empty"
+: > "$work/sig-empty/mcp-guardrail-desktop-1.2.3-macos-arm64.app.tar.gz.minisig"
+expect_exit1 "render-update-manifest rejects an empty file" \
+  "$SCRIPTS/render-update-manifest" 1.2.3 "$work/sig-empty"
+expect_exit1 "render-update-manifest rejects a bad version" "$SCRIPTS/render-update-manifest" 1.2 "$work/sig"
 
 echo "$passed passed"

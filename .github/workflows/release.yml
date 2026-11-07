@@ -75,6 +75,11 @@ jobs:
           for file in desktop/target/release/bundle/{dmg,deb,rpm,appimage}/*.{dmg,deb,rpm,AppImage}; do
             cp "$file" "dist/mcp-guardrail-desktop-$VERSION-$PLATFORM.${file##*.}"
           done
+          # The updater payload has a two-part extension, so it gets its full name here.
+          if [ "$RUNNER_OS" = macOS ]; then
+            COPYFILE_DISABLE=1 tar -czf "dist/mcp-guardrail-desktop-$VERSION-$PLATFORM.app.tar.gz" \
+              -C desktop/target/release/bundle/macos "MCP Guardrail.app"
+          fi
           tar -czf "dist/mcp-guardrail-proxy-$VERSION-$PLATFORM.tar.gz" -C target/release mcp-guardrail-proxy
           ls -l dist
 
@@ -84,11 +89,83 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Only this job reads the update signing key. It runs no build script: it installs
+  # Ubuntu's minisign and runs render-update-manifest from this repository. A pull request
+  # run signs with a throwaway key, so it needs no secret.
+  sign:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: Read the version
+        run: echo "VERSION=$(jq -r .version desktop/tauri.conf.json)" >> "$GITHUB_ENV"
+
+      - name: Write the release signing key
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::error::the UPDATE_SIGNING_KEY secret is empty (see .claude/skills/release-new-version/SKILL.md)"
+            exit 1
+          fi
+          (umask 077 && printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update.key")
+          jq -r .plugins.updater.pubkey desktop/tauri.conf.json | base64 -d > "$RUNNER_TEMP/update.pub"
+
+      - name: Make a throwaway signing key
+        if: github.event_name == 'pull_request'
+        run: minisign -G -W -p "$RUNNER_TEMP/update.pub" -s "$RUNNER_TEMP/update.key"
+
+      # The updater reads the version from the trusted comment, so each comment must hold
+      # exactly the fields and tabs that the Tauri CLI writes.
+      - name: Sign the update payloads and write the manifest
+        run: |
+          mkdir sig manifest
+          timestamp="$(date +%s)"
+          tab="$(printf '\t')"
+          for payload in "mcp-guardrail-desktop-$VERSION-macos-arm64.app.tar.gz" \
+            "mcp-guardrail-desktop-$VERSION-macos-x86_64.app.tar.gz" \
+            "mcp-guardrail-desktop-$VERSION-linux-x86_64.AppImage" \
+            "mcp-guardrail-desktop-$VERSION-linux-arm64.AppImage"; do
+            comment="timestamp:$timestamp${tab}file:$payload${tab}version:$VERSION"
+            minisign -S -s "$RUNNER_TEMP/update.key" -m "dist/$payload" -x "sig/$payload.minisig" \
+              -t "$comment" </dev/null
+            minisign -V -p "$RUNNER_TEMP/update.pub" -m "dist/$payload" -x "sig/$payload.minisig"
+            if [ "$(sed -n 3p "sig/$payload.minisig")" != "trusted comment: $comment" ]; then
+              echo "::error::the trusted comment of $payload is not '$comment'"
+              exit 1
+            fi
+          done
+          .claude/skills/release-new-version/scripts/render-update-manifest "$VERSION" sig \
+            > manifest/mcp-guardrail-desktop-update.json
+          cat manifest/mcp-guardrail-desktop-update.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: update-manifest
+          path: manifest/mcp-guardrail-desktop-update.json
+          if-no-files-found: error
+
   # Only this job can write to the repository. The build jobs run third-party build
   # scripts, so they keep the read-only token.
   upload:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs: [build, sign]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

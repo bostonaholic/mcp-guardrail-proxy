@@ -12,11 +12,12 @@ version="${1:-}"
 
 expected="$(
   {
-    for name in macos-arm64.dmg macos-x86_64.dmg \
+    for name in macos-arm64.dmg macos-x86_64.dmg macos-arm64.app.tar.gz macos-x86_64.app.tar.gz \
       linux-x86_64.deb linux-x86_64.rpm linux-x86_64.AppImage \
       linux-arm64.deb linux-arm64.rpm linux-arm64.AppImage; do
       echo "mcp-guardrail-desktop-$version-$name"
     done
+    echo "mcp-guardrail-desktop-update.json"
     for platform in macos-arm64 macos-x86_64 linux-x86_64 linux-arm64; do
       echo "mcp-guardrail-proxy-$version-$platform.tar.gz"
     done

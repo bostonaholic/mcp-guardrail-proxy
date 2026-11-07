@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Prints the desktop app's update manifest, mcp-guardrail-desktop-update.json, from the four
+# minisign signature files that the release workflow's sign job writes.
+#
+# Usage: render-update-manifest <X.Y.Z> <dir>
+#   <dir> holds mcp-guardrail-desktop-<X.Y.Z>-<platform>.<ext>.minisig for each update payload.
+# Output: the manifest JSON on stdout.
+# Exit codes: 0 done; 1 a bad version, or a missing or empty signature file; 2 jq or base64 is
+# missing.
+set -euo pipefail
+
+SKILL=".claude/skills/release-new-version/SKILL.md"
+DOWNLOAD="https://github.com/bostonaholic/mcp-guardrail-proxy/releases/download"
+# Each row: <release platform> <manifest key> <payload extension>. The manifest keys must match
+# manifest_key in desktop/src/update.rs, or every check on that platform fails.
+PLATFORMS="macos-arm64 darwin-aarch64 app.tar.gz
+macos-x86_64 darwin-x86_64 app.tar.gz
+linux-x86_64 linux-x86_64 AppImage
+linux-arm64 linux-aarch64 AppImage"
+version="${1:-}"
+dir="${2:-}"
+
+fail() {
+  echo "render-update-manifest: $1 (see $SKILL)" >&2
+  exit 1
+}
+
+for tool in jq base64; do
+  command -v "$tool" >/dev/null || { echo "render-update-manifest: $tool is not installed (see $SKILL)" >&2; exit 2; }
+done
+[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "version must be X.Y.Z, got '$version'"
+[ -n "$dir" ] || fail "usage: render-update-manifest <X.Y.Z> <dir>"
+
+platforms='{}'
+while read -r platform key extension; do
+  payload="mcp-guardrail-desktop-$version-$platform.$extension"
+  signature_file="$dir/$payload.minisig"
+  [ -s "$signature_file" ] || fail "missing or empty signature file $signature_file"
+  # GNU base64 wraps its output, and the updater reads the signature as one base64 string.
+  signature="$(base64 <"$signature_file" | tr -d '\n')"
+  platforms="$(jq --arg key "$key" --arg url "$DOWNLOAD/v$version/$payload" --arg signature "$signature" \
+    '.[$key] = {url: $url, signature: $signature}' <<<"$platforms")"
+done <<<"$PLATFORMS"
+
+jq -n --arg version "$version" --argjson platforms "$platforms" '{version: $version, platforms: $platforms}'

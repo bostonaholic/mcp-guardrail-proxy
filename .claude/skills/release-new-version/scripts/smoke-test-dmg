@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Mounts a macOS disk image and checks the app inside: version, bundle id, architecture, and a
-# signature whose identifier matches the bundle id, which macOS notifications need. macOS only.
+# Opens a macOS disk image or an updater archive and checks the app inside: version, bundle id,
+# architecture, and a signature whose identifier matches the bundle id, which macOS
+# notifications need. macOS only.
 #
-# Usage: smoke-test-dmg <path-to-dmg> <X.Y.Z> <arm64|x86_64>
+# Usage: smoke-test-dmg <path-to-dmg-or-app.tar.gz> <X.Y.Z> <arm64|x86_64>
 # Output: "ok <version> <bundle-id> <architecture>".
 # Exit codes: 0 good; 1 a check failed; 2 a required tool is missing.
 set -euo pipefail
 
 SKILL=".claude/skills/release-new-version/SKILL.md"
 BUNDLE_ID="com.bostonaholic.mcp-guardrail"
-dmg="${1:-}"
+path="${1:-}"
 version="${2:-}"
 architecture="${3:-}"
 
@@ -18,18 +19,30 @@ fail() {
   exit 1
 }
 
-for tool in codesign hdiutil lipo plutil; do
-  command -v "$tool" >/dev/null || { echo "smoke-test-dmg: $tool is not installed (see $SKILL)" >&2; exit 2; }
+require() {
+  command -v "$1" >/dev/null || { echo "smoke-test-dmg: $1 is not installed (see $SKILL)" >&2; exit 2; }
+}
+
+for tool in codesign lipo plutil; do
+  require "$tool"
 done
-[ -f "$dmg" ] && [ -n "$version" ] && [ -n "$architecture" ] ||
-  fail "usage: smoke-test-dmg <path-to-dmg> <X.Y.Z> <arm64|x86_64>"
+[ -f "$path" ] && [ -n "$version" ] && [ -n "$architecture" ] ||
+  fail "usage: smoke-test-dmg <path-to-dmg-or-app.tar.gz> <X.Y.Z> <arm64|x86_64>"
 
-mount_point="$(mktemp -d)"
-trap 'hdiutil detach -quiet "$mount_point" || true; rmdir "$mount_point"' EXIT
-hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mount_point" "$dmg"
-
-app="$mount_point/MCP Guardrail.app"
-[ -d "$app" ] || fail "no MCP Guardrail.app in $dmg"
+if [[ "$path" == *.app.tar.gz ]]; then
+  require tar
+  work="$(mktemp -d)"
+  trap 'rm -rf -- "$work"' EXIT
+  tar -xzf "$path" -C "$work"
+  app="$work/MCP Guardrail.app"
+else
+  require hdiutil
+  mount_point="$(mktemp -d)"
+  trap 'hdiutil detach -quiet "$mount_point" || true; rmdir "$mount_point"' EXIT
+  hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mount_point" "$path"
+  app="$mount_point/MCP Guardrail.app"
+fi
+[ -d "$app" ] || fail "no MCP Guardrail.app in $path"
 
 plist="$app/Contents/Info.plist"
 actual_version="$(plutil -extract CFBundleShortVersionString raw "$plist")"

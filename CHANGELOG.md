@@ -13,6 +13,7 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 - An update mode in the desktop app window: Off, Notify, or Install. The default is Notify. In Notify and Install, the app checks github.com about one minute after launch and once a day after that. Off makes no check until you start one.
 - In Notify mode, the desktop app sends one notification for each new version.
 - A desktop app installed from a release `.dmg` or `.AppImage` installs a new version when you press Install, or by itself in Install mode. Restart the app to use it.
+- Each GitHub release also holds a signed `.app.tar.gz` for each Mac architecture and `mcp-guardrail-desktop-update.json`, which the desktop app's updater reads.
 
 ## 0.2.0 - 2026-11-06
 
