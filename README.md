@@ -21,6 +21,7 @@ See [INSTALL.md](INSTALL.md) for the steps.
 Wrap an upstream server from a shell. The upstream command is a placeholder.
 
 ```sh
+mkdir -p ~/.local/state/mcp-guardrail
 mcp-guardrail-proxy proxy --audit-log ~/.local/state/mcp-guardrail/audit.jsonl -- <upstream-command> [args...]
 ```
 
@@ -301,7 +302,7 @@ The project skill `.claude/skills/verify-taint-invariants/SKILL.md` describes ho
 
 ## MCP client setup
 
-Put the proxy in front of the upstream server in the client config. Use absolute paths. Replace `<upstream-command>` and `<arg>` with the server you want to guard. To use a custom policy file, put `"--policy"` and its absolute path before `"--"`.
+Put the proxy in front of the upstream server in the client config. Use absolute paths. Replace `<upstream-command>` and `<arg>` with the server you want to guard. To use a custom policy file, put `"--policy"` and its absolute path before `"--"`. [INSTALL.md](INSTALL.md) also adds `--audit-log` to each entry, and its client reference table lists each client's config file.
 
 Cursor, in `mcp.json`:
 
