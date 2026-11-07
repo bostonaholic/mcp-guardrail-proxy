@@ -16,10 +16,20 @@ pub struct EffectiveSettings {
 
 /// The contents of `settings.json`. A missing field takes its default, and the load ignores
 /// unknown fields, so an older app can still read a file that a newer one wrote.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct SavedSettings {
     audit_log_path: Option<PathBuf>,
+    notifications: bool,
+}
+
+impl Default for SavedSettings {
+    fn default() -> Self {
+        Self {
+            audit_log_path: None,
+            notifications: true,
+        }
+    }
 }
 
 /// What the window shows.
@@ -96,7 +106,7 @@ impl SettingsStore {
     pub fn effective(&self) -> EffectiveSettings {
         EffectiveSettings {
             audit_log_path: self.effective_path(),
-            notifications: true,
+            notifications: self.saved.notifications,
         }
     }
 
@@ -104,7 +114,7 @@ impl SettingsStore {
         SettingsView {
             audit_log_path: self.effective_path().display().to_string(),
             path_from_variable: self.variable.is_some(),
-            notifications: true,
+            notifications: self.saved.notifications,
             problem: None,
         }
     }
@@ -118,6 +128,16 @@ impl SettingsStore {
         let path = checked_audit_log_path(text)?;
         self.commit(SavedSettings {
             audit_log_path: Some(path),
+            ..self.saved.clone()
+        })
+    }
+
+    /// Works while the variable sets the path. The file keeps the saved path, never the
+    /// variable's.
+    pub fn set_notifications(&mut self, on: bool) -> Result<(), SettingsError> {
+        self.commit(SavedSettings {
+            notifications: on,
+            ..self.saved.clone()
         })
     }
 
@@ -528,5 +548,53 @@ mod tests {
             default_path.display().to_string(),
             "the window keeps the previous path"
         );
+    }
+
+    #[test]
+    fn notifications_off_survives_a_reload_and_keeps_the_saved_path() {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let default_path = dir.path().join("default.jsonl");
+        let variable = dir.path().join("from-variable.jsonl");
+        let with_saved = dir.path().join("with-saved");
+        std::fs::create_dir_all(&with_saved).expect("create the config folder");
+        std::fs::write(
+            with_saved.join("settings.json"),
+            r#"{"audit_log_path": "/saved/audit.jsonl", "notifications": true}"#,
+        )
+        .expect("write a saved settings file");
+        let without_saved = dir.path().join("without-saved");
+        let rows = [
+            (
+                "a saved path",
+                with_saved.join("settings.json"),
+                PathBuf::from("/saved/audit.jsonl"),
+            ),
+            (
+                "no saved path",
+                without_saved.join("settings.json"),
+                default_path.clone(),
+            ),
+        ];
+        for (label, file, expected_path) in rows {
+            let mut store =
+                SettingsStore::load(file.clone(), Some(variable.clone()), default_path.clone());
+            assert_eq!(
+                store
+                    .set_notifications(false)
+                    .map_err(|error| error.to_string()),
+                Ok(()),
+                "{label}: the toggle works while the variable is set"
+            );
+            let reloaded = SettingsStore::load(file, None, default_path.clone());
+            assert_eq!(
+                reloaded.effective().audit_log_path,
+                expected_path,
+                "{label}: the variable path never reaches settings.json"
+            );
+            assert!(
+                !reloaded.effective().notifications,
+                "{label}: notifications stay off after a reload"
+            );
+        }
     }
 }

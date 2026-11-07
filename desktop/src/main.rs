@@ -71,6 +71,23 @@ fn set_audit_log_path(
     Ok(state.store.view())
 }
 
+#[tauri::command]
+fn set_notifications(
+    on: bool,
+    state: tauri::State<'_, Mutex<SettingsState>>,
+) -> Result<SettingsView, String> {
+    let mut state = state.lock().expect("the settings lock");
+    state
+        .store
+        .set_notifications(on)
+        .map_err(|error| error.to_string())?;
+    state
+        .sender
+        .send(state.store.effective())
+        .map_err(|_| WATCHER_STOPPED.to_string())?;
+    Ok(state.store.view())
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -148,7 +165,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             settings,
-            set_audit_log_path
+            set_audit_log_path,
+            set_notifications
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

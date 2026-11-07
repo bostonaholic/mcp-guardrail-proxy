@@ -35,6 +35,8 @@ The app saves its settings to `settings.json` and reads that file at launch:
 
 At launch, `MCP_GUARDRAIL_AUDIT_LOG` wins when it is set. Then comes the saved path, then the default path.
 
+Clear the "Notify me when a call is blocked" checkbox to stop notifications. The table and the tray still update. Alerts that the app drops while the box is clear never replay when you check it again. The checkbox works while `MCP_GUARDRAIL_AUDIT_LOG` is set.
+
 ## Notifications on macOS
 
 Each blocked call reaches Notification Center within about 3 seconds. Open it to see the alerts. macOS decides whether a banner also pops up, using the app's setting in System Settings > Notifications and any Focus mode. The app needs a bundle signature whose identifier matches its bundle id, so `tauri.conf.json` signs ad hoc. Downloaded releases carry that ad hoc signature too, so macOS blocks them until you clear the quarantine flag, as the release notes explain. A Developer ID signature would remove that step.

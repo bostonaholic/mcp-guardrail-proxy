@@ -60,6 +60,7 @@ function showSettings(view) {
   byId("path-input").disabled = view.path_from_variable;
   byId("path-save").disabled = view.path_from_variable;
   byId("path-variable-note").hidden = !view.path_from_variable;
+  byId("notifications").checked = view.notifications;
 }
 
 async function loadSettings() {
@@ -73,6 +74,16 @@ byId("path-form").addEventListener("submit", async (event) => {
     showBanner(byId("save-error"), null);
   } catch (message) {
     showBanner(byId("save-error"), String(message));
+  }
+});
+
+byId("notifications").addEventListener("change", async (event) => {
+  try {
+    showSettings(await invoke("set_notifications", { on: event.target.checked }));
+    showBanner(byId("save-error"), null);
+  } catch (message) {
+    showBanner(byId("save-error"), String(message));
+    loadSettings();
   }
 });
 

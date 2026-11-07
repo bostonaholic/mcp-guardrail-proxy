@@ -20,6 +20,7 @@ pub struct Monitor {
     tail: Tail,
     dashboard: Dashboard,
     watch: Watch,
+    notifications: bool,
 }
 
 impl Monitor {
@@ -42,14 +43,17 @@ impl Monitor {
             tail,
             dashboard,
             watch,
+            notifications: settings.notifications,
         };
         (monitor, first)
     }
 
     /// `Some` only when `settings` names another log: that log's first snapshot, which the
-    /// caller publishes. The watched path keeps the dashboard and its counters.
+    /// caller publishes. The watched path keeps the dashboard and its counters, and takes only
+    /// the new notifications switch.
     pub fn apply(&mut self, settings: &EffectiveSettings) -> Option<Snapshot> {
         if settings.audit_log_path == self.path {
+            self.notifications = settings.notifications;
             return None;
         }
         let (next, first) = Self::open(settings);
@@ -57,6 +61,7 @@ impl Monitor {
         Some(first)
     }
 
+    /// With notifications off, a poll still publishes, and the alerts it drops never replay.
     pub fn poll(&mut self) -> Poll {
         let (events, error) = read_into(&mut self.tail, &mut self.dashboard);
         let actions = self
@@ -65,7 +70,7 @@ impl Monitor {
         let snapshot = actions
             .publish
             .then(|| self.dashboard.snapshot(&self.log_path, error));
-        let alert = if actions.may_alert {
+        let alert = if actions.may_alert && self.notifications {
             alert_for(&events)
         } else {
             None
@@ -227,6 +232,44 @@ mod tests {
             monitor.poll().snapshot.map(|snapshot| snapshot.total_calls),
             Some(2),
             "the next poll adds the new line to the kept counters"
+        );
+    }
+
+    #[test]
+    fn notifications_off_still_publish_but_never_alert() {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let log = dir.path().join("audit.jsonl");
+        append(&log, "");
+        let off = EffectiveSettings {
+            audit_log_path: log.clone(),
+            notifications: false,
+        };
+        let (mut monitor, _) = Monitor::open(&off);
+        append(&log, &line("blocked-while-off", false));
+        let while_off = monitor.poll();
+        assert_eq!(
+            while_off.snapshot.map(|snapshot| snapshot.total_blocked),
+            Some(1),
+            "the dashboard and tray still update"
+        );
+        assert_eq!(
+            while_off.alert, None,
+            "no alert while notifications are off"
+        );
+        assert!(
+            monitor.apply(&settings_for(&log)).is_none(),
+            "turning notifications on keeps the dashboard"
+        );
+        assert_eq!(
+            monitor.poll().alert,
+            None,
+            "an alert dropped while off never replays"
+        );
+        append(&log, &line("blocked-after-on", false));
+        assert_eq!(
+            monitor.poll().alert.map(|alert| alert.title),
+            Some("Blocked: blocked-after-on".to_string()),
+            "the next blocked call alerts"
         );
     }
 }
