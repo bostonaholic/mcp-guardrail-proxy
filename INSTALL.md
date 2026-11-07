@@ -81,11 +81,14 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
    4. Stop a running copy, replace the app in `~/Applications`, and open it. Give this command a timeout of 1 minute.
 
       ```sh
-      pkill -f '/MCP Guardrail[.]app/Contents/MacOS/' || true
-      rm -rf "$HOME/Applications/MCP Guardrail.app"
-      mkdir -p "$HOME/Applications"
-      ditto "<SRC>/desktop/target/release/bundle/macos/MCP Guardrail.app" "$HOME/Applications/MCP Guardrail.app"
-      open "$HOME/Applications/MCP Guardrail.app"
+      (
+        set -e
+        pkill -f '/MCP Guardrail[.]app/Contents/MacOS/' || true
+        rm -rf "$HOME/Applications/MCP Guardrail.app"
+        mkdir -p "$HOME/Applications"
+        ditto "<SRC>/desktop/target/release/bundle/macos/MCP Guardrail.app" "$HOME/Applications/MCP Guardrail.app"
+        open "$HOME/Applications/MCP Guardrail.app"
+      )
       ```
 
       `ditto` keeps the bundle signature. The `rm -rf` comes first, because `ditto` onto an old bundle keeps files that the new version deleted.
@@ -123,6 +126,8 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
       - `moved to user scope by the guardrail`, on each row of a `disabled` plugin that has a key in the plugin move record of step 6.
       - `an arg names mcp-guardrail-proxy`, on any row where an arg equals `mcp-guardrail-proxy` or ends in `/mcp-guardrail-proxy`. Such an entry can run the proxy through an outer command, such as `env`. Step 6 still wires the row.
       - `probe not run: <reason>`, on a `wrappable` row, an `already wrapped` row, or a `remote` row of a plugin that has a `wrappable` row, when step 7 cannot start the entry as its client does. Check the entry after item 3. The upstream command is the new upstream command of a `wrappable` row, and the first token after the first `--` in `args` of an `already wrapped` row. The reasons are `client variable` (a `$` in `command`, `args`, an `env` value, or `cwd`), `cwd is not absolute`, `relative command` (the upstream command is still relative), `relative argument` (an arg starts with `./` or `../`, and no `cwd` starts with `/`), and `remote` (a `remote` row, because `probe` starts only a stdio server). Step 6 still wires the row.
+
+        The `relative argument` reason does not catch a bare relative arg, such as `server.py` in `python3 server.py`. When such a row has no `cwd`, the probe looks for that file in the agent's folder, not the client's. So the probe can fail although the client starts the server. In the step 7 report, name this as one possible cause of a failed probe.
    5. Show the user one table with the columns `#`, `Client`, `Config file`, `Scope`, `Server`, `Status`, and `Note`. List every entry you found, with one status each.
    6. Below the table, list the default selection: each `wrappable` row, and each row of a plugin that has a `wrappable` row. For each row, give the exact entry or command that step 6 writes, every file it changes, and each backup path.
    7. End the message with one request: reply yes to apply the listed rows, or name the rows to leave out. The user approves or leaves out a plugin as one unit.
@@ -204,7 +209,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 
       Give each probe call a timeout of 10 minutes. A probe exits 0 when the server lists the same tools directly and through the proxy.
    2. If a probe call reaches the 10-minute timeout, report `probe did not end` for the row. Then go to the next row.
-   3. If a probe exits 1, find the cause in the stderr line that contains `mcp-guardrail-proxy: probe` or `mcp-guardrail-proxy: policy error`. Search for the text, because server output can come first on the same line. Then do these actions in order:
+   3. If a probe exits 1, find the cause in the stderr line that contains `mcp-guardrail-proxy: probe`, `mcp-guardrail-proxy: policy error`, or `mcp-guardrail-proxy: cannot start the async runtime`. Search for the text, because server output can come first on the same line. Then do these actions in order:
       1. If the cause is a timeout, and the upstream command is `npx`, `bun`, `uvx`, or `docker`, bare or as a full path, run the probe once more with `--timeout 240`. If the second probe exits 0, the row passes.
       2. Run the entry's own `command` and `args` in the form of the step 7.1 probe, with `< /dev/null`: `(cd -- '<cwd>' && env -- 'NAME=<value>' '<entry command>' '<entry arg>' < /dev/null)`. Add `cd` and `env` by the rules of step 7.1, and quote as in step 6. The proxy ends this run within about 6 s.
       3. Show the user every probe output and the output of that run.
@@ -229,7 +234,7 @@ xattr -dr com.apple.quarantine ~/.local/bin/mcp-guardrail-proxy
 
 ## Client reference
 
-Step 5 reads these files. The Writer and Re-parse columns only name the step 6 writer and its check. Step 6 gives the full steps and the rollback. "Tested" says where the facts in a row come from. A row marked "no" comes from the client's documentation, read on 2026-11-07, and nobody has wired that client with these steps. Check its documentation before you rely on the row. `<file>` in a command of this table is the full path of the row's config file.
+Step 5 reads these files. The Writer and Re-parse columns only name the step 6 writer and its check. Step 6 gives the full steps and the rollback. "Tested" says where the facts in a row come from. A row marked "no" comes from the client's documentation, read on 2026-11-07, and nobody has wired that client with these steps. Check its documentation before you rely on the row. `<file>` in a command of this table is the full path of the row's config file, and `<name>` is the server name.
 
 | Client | Config file | Where servers live | Writer | Re-parse | Restart | Tested |
 |---|---|---|---|---|---|---|
@@ -249,6 +254,8 @@ To undo a row, use [Undo](#undo).
 
 Undo needs no earlier backup. It rebuilds each original entry from its wrapped entry, so it works for a row wired in any pass, and it keeps edits made after the wiring. When the request names a client or a server, undo only those rows. A request that names the change needs no approval table.
 
+Undo uses these values. `<file>` is the full path of the row's config file. `<name>` is a server name. `<record>` is the full path of `~/.local/state/mcp-guardrail/plugin-moves.json`, and each of its keys has the form `<plugin>@<marketplace>`. Undo needs no `<BIN>` and no `<AUDIT>`, because each rebuilt entry holds neither.
+
 1. Run the step 5 scan. The rows to undo are the `already wrapped` rows. Leave an `already wrapped` row in a plugin's own file alone, and report it with its file. No writer changes a plugin's own file. Read the plugin move record, `~/.local/state/mcp-guardrail/plugin-moves.json`. A user-scope server whose name is in a record key belongs to that plugin's move, not to a user-scope row.
 2. Rebuild each row. The new `command` is the first token after the first `--` in `args`. The new `args` is every token after that one, or `[]` when there is none. Keep every other key as it is now.
 3. Write each rebuilt row with steps 6.1 to 6.3 and the step 6 writer for its client, with the rebuilt entry in place of the wrapped one. That writer gives the check, the rollback, and the `project folder gone` case.
@@ -264,10 +271,12 @@ Undo needs no earlier backup. It rebuilds each original entry from its wrapped e
 
 Do these steps in order when the user asks for an upgrade.
 
-1. Upgrade the binary: run step 2 again. When the installed binary came from another commit, cargo prints `Replaced package` and replaces it. When it came from the same commit, cargo prints `is already installed, use --force to override`, exits 0, and keeps the binary. Both were observed in a sandbox on 2026-11-07.
+Upgrade uses these values. `<BIN>` is the full path that the step 3 block prints in item 1. `<file>` is the full path of the row's config file in steps 6.1 to 6.3, and of the policy file in a step 7 probe. `<SRC>` comes from step 4.1 in item 4. Item 5 runs the steps again from step 5, and step 6 sets `<AUDIT>`.
+
+1. Upgrade the binary: run step 2 again. When the installed binary came from another commit, cargo prints `Replaced package` and replaces it. When it came from the same commit, cargo prints `is already installed, use --force to override`, exits 0, and keeps the binary. Both were observed in a sandbox on 2026-11-07. Then run the step 3 block, which tests the binary. `<BIN>` in the items that follow is the full path that this block printed.
 2. Run the step 5 scan. Probe each `already wrapped` row by the rules of step 7. A failed probe gets the step 7 actions.
-3. If `<BIN>` changed, re-wire each `already wrapped` row whose `command` is not the new `<BIN>`. A switch between `cargo install` and the prebuilt binary changes `<BIN>`.
-   - Set only `command` to the new `<BIN>`. Keep `args`, `env`, `cwd`, and every other key.
+3. Re-wire each `already wrapped` row whose `command` is not `<BIN>`. Such a row runs another copy of the binary, for example after a switch between `cargo install` and the prebuilt binary.
+   - Set only `command` to `<BIN>`. Keep `args`, `env`, `cwd`, and every other key.
    - Write the row with steps 6.1 to 6.3 and the step 6 writer for its client. That writer gives the check, the rollback, and the `project folder gone` case. A moved plugin server is a user-scope row here.
    - Leave an `already wrapped` row in a plugin's own file alone, and report it with its file. No writer changes a plugin's own file.
    - The server names do not change, so the plugin move record stays valid.
@@ -289,6 +298,8 @@ Policy files from an earlier version still load, because the policy format does 
 The user owns the removal of `~/.local/share/mcp-guardrail/src`, because a clone can hold their own work.
 
 Do these steps in order. Ask no question.
+
+Uninstall uses one value, `<file>`, the full path of a config file. It needs no `<BIN>`, because item 1 finds each binary path.
 
 1. Run the step 5 scan. Before any undo write, note each distinct `command` of the `already wrapped` rows. Resolve a bare `mcp-guardrail-proxy` with the `BIN` line of step 3. If no row is wrapped, note the output of that line.
 2. Run [Undo](#undo) for every wired row. If Undo reports a row that it did not undo, other than a `project folder gone` row, stop here. List those rows and remove nothing, so they keep working in their clients.

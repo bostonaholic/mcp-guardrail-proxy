@@ -50,6 +50,8 @@ mcp-guardrail-proxy check-policy --policy policies/default-policy.toml
 # policy OK: policies/default-policy.toml: 15 rules, 4 taint sources
 ```
 
+To check a server through the proxy before you wire it into a client, see [Probe a server](#probe-a-server).
+
 ## Architecture
 
 The library crate is `mcp_guardrail_proxy`. The data plane has these modules.
@@ -371,7 +373,7 @@ Each tool line gives the decision and the rule id for a call with arguments `{}`
 
 When the lists differ, three more lines follow `tool lists: differ`: `only direct:`, `only through the proxy:`, and `definition differs:`, each with tool names or `none`. The policy outcomes then cover every tool from either list. The server's own stderr passes through to the probe's stderr.
 
-The exit code is 0 when both runs list the same tools. It is 1 for any failure, and stderr then holds a line that contains `mcp-guardrail-proxy: probe` and names the cause, such as a timeout, an error reply, or an early exit. It is 2 for a usage error. When the direct run fails, stdout is empty and the proxied run does not start. When the proxied run fails, stdout gives the direct count and the policy outcomes of the direct list. A policy file that does not load exits 1 before any server starts.
+The exit code is 0 when both runs list the same tools. It is 1 for any failure, and stderr then holds a line that names the cause. A failed run prints a line that contains `mcp-guardrail-proxy: probe`, with a cause such as a timeout, an error reply, or an early exit. A policy file that does not load prints `mcp-guardrail-proxy: policy error` and exits 1 before any server starts. A runtime that does not start prints `mcp-guardrail-proxy: cannot start the async runtime`. It is 2 for a usage error. When the direct run fails, stdout is empty and the proxied run does not start. When the proxied run fails, stdout gives the direct count and the policy outcomes of the direct list.
 
 The probe does not prove these things:
 
