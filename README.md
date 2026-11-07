@@ -62,6 +62,7 @@ The library crate is `mcp_guardrail_proxy`. The data plane has these modules.
 | `telemetry` | Audit events, secret redaction, and the shared line writer |
 | `proxy` | The `Interceptor` decision point and the async stdio relay |
 | `replay` | The corpus replay behind the `replay` command |
+| `probe` | The tool-list comparison behind the `probe` command |
 | `control_plane` | Traits for policy, audit, and approval, with local defaults |
 
 `Interceptor::handle_host_line` judges each host line in this order:
@@ -340,6 +341,36 @@ Grok Bot should take the same `mcpServers` shape, but nobody has tested its form
   }
 }
 ```
+
+## Probe a server
+
+`probe` lists a server's tools twice and compares the lists. The first run talks to the server directly. The second run talks to it through a proxy session under the embedded default policy. Use it to check a wrapped entry before you restart its client.
+
+```sh
+mcp-guardrail-proxy probe [--timeout <seconds>] -- <upstream-command> [args...]
+```
+
+Each run sends `initialize`, `notifications/initialized`, and `tools/list`, then closes the server's input. `--timeout` limits each run, from 1 to 3600 seconds. The default is 60.
+
+This output came from a real run against the repository's test mock, the `integration_test` binary that `cargo test` builds, with `MCP_GUARDRAIL_MOCK_UPSTREAM=1` and `MCP_GUARDRAIL_MOCK_LOG` set:
+
+```text
+direct: 1 tools
+through the proxy: 1 tools
+tool lists: equal
+result: PASS
+```
+
+When the lists differ, three more lines follow `tool lists: differ`: `only direct:`, `only through the proxy:`, and `definition differs:`, each with tool names or `none`. The server's own stderr passes through to the probe's stderr.
+
+The exit code is 0 when both runs list the same tools. It is 1 for any failure, and stderr then holds a line that contains `mcp-guardrail-proxy: probe` and names the cause, such as a timeout, an error reply, or an early exit. It is 2 for a usage error. When the direct run fails, stdout is empty and the proxied run does not start.
+
+The probe does not prove these things:
+
+- It runs in your environment, not the client's. A `PATH` that the client lacks shows only after the client restarts.
+- It does not follow `tools/list` pagination, and it does not answer requests from the server. A server that pages its tools fails the probe.
+- It does not open `--audit-log`, and it writes no audit line.
+- A server that holds a lock file or a port can fail its probe while a client runs its own copy of it.
 
 ## Desktop app
 

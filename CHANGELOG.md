@@ -8,6 +8,7 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 - Downloadable proxy binary for macOS and Linux on each GitHub release, so you can install the proxy without Rust.
 - A Settings section in the desktop app window, where you change the watched audit log without a relaunch and turn blocked-call notifications off and on. The app keeps your settings across relaunches.
+- `mcp-guardrail-proxy probe`, which lists an MCP server's tools directly and through the proxy and fails when the lists differ.
 
 ## 0.2.0 - 2026-11-06
 
