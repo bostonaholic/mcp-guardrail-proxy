@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Prints the GitHub release notes: the version's CHANGELOG.md section, then the download guide.
+#
+# Usage: render-release-notes <X.Y.Z>      (run from the repository root)
+# Output: Markdown on stdout.
+# Exit codes: 0 done; 1 the changelog has no section for the version, or it is empty.
+set -euo pipefail
+
+SKILL=".claude/skills/release-new-version/SKILL.md"
+version="${1:-}"
+
+section="$(awk -v heading="## $version - " '
+  /^## / { in_section = (index($0, heading) == 1); next }
+  in_section { print }
+' CHANGELOG.md | sed '/./,$!d')"
+
+if ! grep -q '[^[:space:]]' <<<"$section"; then
+  echo "render-release-notes: CHANGELOG.md has no entries for '$version' (see $SKILL)" >&2
+  exit 1
+fi
+
+printf '%s\n' "$section"
+cat <<NOTES
+
+## Download the desktop app
+
+| System | File |
+| --- | --- |
+| macOS, Apple silicon | \`mcp-guardrail-desktop-$version-macos-arm64.dmg\` |
+| macOS, Intel | \`mcp-guardrail-desktop-$version-macos-x86_64.dmg\` |
+| Linux x86_64 | \`mcp-guardrail-desktop-$version-linux-x86_64\` as \`.deb\`, \`.rpm\`, or \`.AppImage\` |
+| Linux arm64 | \`mcp-guardrail-desktop-$version-linux-arm64\` as \`.deb\`, \`.rpm\`, or \`.AppImage\` |
+
+The macOS app has an ad hoc signature, not a Developer ID, so macOS blocks it the first time. Drag it to Applications, then run:
+
+\`\`\`sh
+xattr -dr com.apple.quarantine "/Applications/MCP Guardrail.app"
+\`\`\`
+
+The app only reads the audit log. To install the proxy, follow [INSTALL.md](https://github.com/bostonaholic/mcp-guardrail-proxy/blob/v$version/INSTALL.md).
+NOTES
