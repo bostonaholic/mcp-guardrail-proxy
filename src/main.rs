@@ -61,6 +61,9 @@ enum Command {
     },
     /// List an upstream server's tools directly and through the proxy, and compare them.
     Probe {
+        /// The policy file; without it, the embedded default policy applies.
+        #[arg(long)]
+        policy: Option<PathBuf>,
         /// Seconds each run may take, from 1 to 3600.
         #[arg(
             long,
@@ -97,7 +100,11 @@ fn main() -> ExitCode {
         ),
         Command::Replay { policy, corpus } => run_replay_command(policy.as_deref(), &corpus),
         Command::CheckPolicy { policy } => run_check_policy(policy.as_deref()),
-        Command::Probe { timeout, upstream } => run_probe_command(timeout, &upstream),
+        Command::Probe {
+            policy,
+            timeout,
+            upstream,
+        } => run_probe_command(policy.as_deref(), timeout, &upstream),
     }
 }
 
@@ -106,6 +113,14 @@ fn load_engine(policy: Option<&Path>) -> Result<PolicyEngine, PolicyError> {
     match policy {
         Some(path) => PolicyEngine::from_path(path),
         None => PolicyEngine::embedded_default(),
+    }
+}
+
+/// The name of the policy at `policy` in command output: its path, or `embedded default`.
+fn policy_label(policy: Option<&Path>) -> String {
+    match policy {
+        Some(path) => path.display().to_string(),
+        None => "embedded default".to_string(),
     }
 }
 
@@ -200,12 +215,9 @@ fn run_replay_command(policy: Option<&Path>, corpus: &std::path::Path) -> ExitCo
 fn run_check_policy(policy: Option<&Path>) -> ExitCode {
     match load_engine(policy) {
         Ok(engine) => {
-            let source = match policy {
-                Some(path) => path.display().to_string(),
-                None => "embedded default".to_string(),
-            };
             println!(
-                "policy OK: {source}: {} rules, {} taint sources",
+                "policy OK: {}: {} rules, {} taint sources",
+                policy_label(policy),
                 engine.rule_count(),
                 engine.taint_source_count()
             );
@@ -218,8 +230,8 @@ fn run_check_policy(policy: Option<&Path>) -> ExitCode {
     }
 }
 
-fn run_probe_command(timeout: u64, upstream: &[String]) -> ExitCode {
-    let engine = match load_engine(None) {
+fn run_probe_command(policy: Option<&Path>, timeout: u64, upstream: &[String]) -> ExitCode {
+    let engine = match load_engine(policy) {
         Ok(engine) => engine,
         Err(error) => {
             eprintln!("mcp-guardrail-proxy: policy error: {error}");
@@ -236,7 +248,12 @@ fn run_probe_command(timeout: u64, upstream: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let report = runtime.block_on(run_probe(upstream, engine, Duration::from_secs(timeout)));
+    let report = runtime.block_on(run_probe(
+        upstream,
+        engine,
+        policy_label(policy),
+        Duration::from_secs(timeout),
+    ));
     let render = report.render();
     if !render.is_empty() {
         println!("{render}");

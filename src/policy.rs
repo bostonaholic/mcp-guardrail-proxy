@@ -123,8 +123,12 @@ impl Matcher {
     }
 
     fn matches(&self, tool_name: &str, argument_text: &str) -> bool {
-        self.tool.is_match(tool_name)
+        self.matches_tool(tool_name)
             && (self.args.is_empty() || self.args.iter().any(|re| re.is_match(argument_text)))
+    }
+
+    fn matches_tool(&self, tool_name: &str) -> bool {
+        self.tool.is_match(tool_name)
     }
 }
 
@@ -234,6 +238,18 @@ impl PolicyEngine {
     /// The number of taint sources.
     pub fn taint_source_count(&self) -> usize {
         self.sources.len()
+    }
+
+    /// The ids, in file order, of the rules that read argument text for `tool_name`, in any session.
+    ///
+    /// A listed rule applies only to a call whose argument text one of its regexes matches.
+    /// `when_tainted` and decision priority do not filter the list.
+    pub fn argument_rule_ids(&self, tool_name: &str) -> Vec<String> {
+        self.rules
+            .iter()
+            .filter(|rule| rule.has_arg_regexes && rule.matcher.matches_tool(tool_name))
+            .map(|rule| rule.id.clone())
+            .collect()
     }
 
     /// Maps `call` onto the model's category and sensitivity, ignoring session taint.
@@ -877,6 +893,45 @@ mod tests {
                 "tainted-approve-workspace-write",
                 "tainted-approve-pr-creation",
             ]
+        );
+    }
+
+    #[test]
+    fn argument_rule_ids_lists_matching_argument_rules_in_file_order() {
+        let engine = default_engine();
+        assert_eq!(
+            engine.argument_rule_ids("bash"),
+            [
+                "deny-system-credential-files",
+                "deny-ssh-key-material",
+                "deny-aws-credentials",
+                "deny-dotenv-files",
+                "deny-destructive-shell",
+                "deny-env-dump",
+            ],
+            "bash"
+        );
+        assert_eq!(
+            engine.argument_rule_ids("read_file"),
+            [
+                "deny-system-credential-files",
+                "deny-ssh-key-material",
+                "deny-aws-credentials",
+                "deny-dotenv-files",
+            ],
+            "read_file"
+        );
+        assert_eq!(
+            engine.argument_rule_ids("fetch"),
+            [
+                "deny-system-credential-files",
+                "deny-ssh-key-material",
+                "deny-aws-credentials",
+                "deny-dotenv-files",
+                "tainted-deny-http-write-method",
+                "tainted-deny-url-query-payload",
+            ],
+            "fetch"
         );
     }
 

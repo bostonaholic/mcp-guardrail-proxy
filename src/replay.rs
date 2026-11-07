@@ -323,7 +323,7 @@ fn describe_code(forwarded: bool, reply_code: Option<i64>) -> String {
 }
 
 /// The decision's name as it appears in the policy file and the audit log.
-fn decision_name(decision: Decision) -> &'static str {
+pub(crate) fn decision_name(decision: Decision) -> &'static str {
     match decision {
         Decision::Allow => "allow",
         Decision::Deny => "deny",

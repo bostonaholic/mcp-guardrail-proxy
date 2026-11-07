@@ -344,13 +344,13 @@ Grok Bot should take the same `mcpServers` shape, but nobody has tested its form
 
 ## Probe a server
 
-`probe` lists a server's tools twice and compares the lists. The first run talks to the server directly. The second run talks to it through a proxy session under the embedded default policy. Use it to check a wrapped entry before you restart its client.
+`probe` lists a server's tools twice and compares the lists. The first run talks to the server directly. The second run talks to it through a proxy session. The report then gives the policy outcome of each tool. Use it to check a wrapped entry before you restart its client.
 
 ```sh
-mcp-guardrail-proxy probe [--timeout <seconds>] -- <upstream-command> [args...]
+mcp-guardrail-proxy probe [--policy <file>] [--timeout <seconds>] -- <upstream-command> [args...]
 ```
 
-Each run sends `initialize`, `notifications/initialized`, and `tools/list`, then closes the server's input. `--timeout` limits each run, from 1 to 3600 seconds. The default is 60.
+Each run sends `initialize`, `notifications/initialized`, and `tools/list`, then closes the server's input. `--timeout` limits each run, from 1 to 3600 seconds. The default is 60. `--policy` sets the policy for the proxied run and for the policy outcomes. Without it, the embedded default applies.
 
 This output came from a real run against the repository's test mock, the `integration_test` binary that `cargo test` builds, with `MCP_GUARDRAIL_MOCK_UPSTREAM=1` and `MCP_GUARDRAIL_MOCK_LOG` set:
 
@@ -358,12 +358,19 @@ This output came from a real run against the repository's test mock, the `integr
 direct: 1 tools
 through the proxy: 1 tools
 tool lists: equal
+policy: embedded default: 15 rules, 4 taint sources
+outcome of a call with arguments {}:
+search_files: clean allow (default-allow); tainted allow (default-allow)
+argument rules for every tool: deny-system-credential-files, deny-ssh-key-material, deny-aws-credentials, deny-dotenv-files
+a listed argument rule applies only to a call whose argument text it matches, and the strongest decision among the applicable rules wins
 result: PASS
 ```
 
-When the lists differ, three more lines follow `tool lists: differ`: `only direct:`, `only through the proxy:`, and `definition differs:`, each with tool names or `none`. The server's own stderr passes through to the probe's stderr.
+Each tool line gives the decision and the rule id for a call with arguments `{}`. `clean` is a session that has read no untrusted content. `tainted` is a session after one call to a taint source. A tool line ends with `; argument rules:` and rule ids when rules read the argument text of that tool. A listed argument rule applies only to a call whose argument text it matches, so a call with other arguments can get a stronger decision. Argument rules that apply to every listed tool print once, on the `argument rules for every tool:` line.
 
-The exit code is 0 when both runs list the same tools. It is 1 for any failure, and stderr then holds a line that contains `mcp-guardrail-proxy: probe` and names the cause, such as a timeout, an error reply, or an early exit. It is 2 for a usage error. When the direct run fails, stdout is empty and the proxied run does not start.
+When the lists differ, three more lines follow `tool lists: differ`: `only direct:`, `only through the proxy:`, and `definition differs:`, each with tool names or `none`. The policy outcomes then cover every tool from either list. The server's own stderr passes through to the probe's stderr.
+
+The exit code is 0 when both runs list the same tools. It is 1 for any failure, and stderr then holds a line that contains `mcp-guardrail-proxy: probe` and names the cause, such as a timeout, an error reply, or an early exit. It is 2 for a usage error. When the direct run fails, stdout is empty and the proxied run does not start. When the proxied run fails, stdout gives the direct count and the policy outcomes of the direct list. A policy file that does not load exits 1 before any server starts.
 
 The probe does not prove these things:
 

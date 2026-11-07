@@ -1,6 +1,6 @@
 //! Lists an upstream server's tools directly and through the proxy, and compares them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::process::Stdio;
 use std::time::Duration;
@@ -12,14 +12,16 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::control_plane::PendingApprovalBroker;
 use crate::machines::framer::{LineEnd, LineFramer};
-use crate::policy::PolicyEngine;
+use crate::policy::{Evaluation, PolicyEngine};
 use crate::protocol::{
-    JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RequestId, encode_frame,
-    parse_frame,
+    JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpCall, RequestId,
+    encode_frame, parse_frame,
 };
 use crate::proxy::{
     CHILD_EXIT_GRACE, MAX_FRAME_BYTES, ProxyConfig, ProxyError, read_capped_line, run_proxy_with_io,
 };
+use crate::replay::decision_name;
+use crate::taint::{SessionTaintState, SourceCategory};
 use crate::telemetry::{JsonlAuditSink, SharedLineWriter};
 
 /// The text that starts each stderr line about a probe failure.
@@ -36,6 +38,10 @@ const TOOLS_LIST_METHOD: &str = "tools/list";
 const HOST_PIPE_BYTES: usize = 64 * 1024;
 /// The session id of the proxied run.
 const PROBE_SESSION_ID: &str = "probe";
+/// The tool name recorded as the untrusted source that taints the policy section's tainted session.
+const TAINT_SOURCE_TOOL: &str = "probe";
+/// The line that follows the policy section when it lists an argument rule.
+const ARGUMENT_RULES_NOTE: &str = "a listed argument rule applies only to a call whose argument text it matches, and the strongest decision among the applicable rules wins";
 
 /// The outcome of one probe.
 pub struct ProbeReport {
@@ -64,18 +70,20 @@ impl ProbeReport {
 
 /// Lists the tools of `upstream` directly, then through a proxy session under `engine`, and
 /// compares the lists. Each run may take `timeout`. The proxied run is skipped when the direct
-/// run fails.
+/// run fails. The report names the policy as `policy_label` and gives each listed tool's
+/// outcome under `engine`.
 pub async fn run_probe(
     upstream: &[String],
     engine: PolicyEngine,
+    policy_label: String,
     timeout: Duration,
 ) -> ProbeReport {
     let direct = run_direct(upstream, timeout).await;
     if direct.is_err() {
-        return build_report(direct, None, None);
+        return build_report(&engine, policy_label, direct, None, None);
     }
-    let (proxied, session_error) = run_proxied(upstream, engine, timeout).await;
-    build_report(direct, Some(proxied), session_error)
+    let (proxied, session_error) = run_proxied(upstream, engine.clone(), timeout).await;
+    build_report(&engine, policy_label, direct, Some(proxied), session_error)
 }
 
 /// Why one run did not list the tools.
@@ -422,9 +430,85 @@ fn joined_names(names: &[&str]) -> String {
         .join(", ")
 }
 
+/// The policy line, then each tool's outcome for a call with arguments `{}` in a clean and in a
+/// tainted session, then the rules that read argument text.
+///
+/// Argument rules that every tool shares print once, on their own line. Each tool line lists the
+/// rest of its own.
+fn policy_lines(engine: &PolicyEngine, policy_label: &str, names: &BTreeSet<&str>) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "policy: {policy_label}: {} rules, {} taint sources",
+            engine.rule_count(),
+            engine.taint_source_count()
+        ),
+        "outcome of a call with arguments {}:".to_string(),
+    ];
+    let argument_rules: Vec<(&str, Vec<String>)> = names
+        .iter()
+        .map(|name| (*name, engine.argument_rule_ids(name)))
+        .collect();
+    let Some((_, first_rules)) = argument_rules.first() else {
+        lines.push("no tools".to_string());
+        return lines;
+    };
+    let shared: Vec<&String> = first_rules
+        .iter()
+        .filter(|id| argument_rules.iter().all(|(_, ids)| ids.contains(id)))
+        .collect();
+    let clean = SessionTaintState::new();
+    let mut tainted = SessionTaintState::new();
+    tainted.record_forwarded(0, TAINT_SOURCE_TOOL, SourceCategory::UntrustedSource, None);
+    let mut lists_a_rule = !shared.is_empty();
+    for (name, ids) in &argument_rules {
+        let call = McpCall::ToolCall {
+            name: (*name).to_string(),
+            arguments: json!({}),
+        };
+        let mut line = format!(
+            "{}: clean {}; tainted {}",
+            escaped(name),
+            outcome(&engine.evaluate(&call, &clean)),
+            outcome(&engine.evaluate(&call, &tainted))
+        );
+        let own: Vec<&str> = ids
+            .iter()
+            .filter(|id| !shared.contains(id))
+            .map(String::as_str)
+            .collect();
+        if !own.is_empty() {
+            line.push_str(&format!("; argument rules: {}", own.join(", ")));
+            lists_a_rule = true;
+        }
+        lines.push(line);
+    }
+    if !shared.is_empty() {
+        let shared: Vec<&str> = shared.into_iter().map(String::as_str).collect();
+        lines.push(format!(
+            "argument rules for every tool: {}",
+            shared.join(", ")
+        ));
+    }
+    if lists_a_rule {
+        lines.push(ARGUMENT_RULES_NOTE.to_string());
+    }
+    lines
+}
+
+/// `<decision> (<rule id>)`.
+fn outcome(evaluation: &Evaluation) -> String {
+    format!(
+        "{} ({})",
+        decision_name(evaluation.decision),
+        evaluation.rule_id
+    )
+}
+
 /// The report for one probe: the direct run's outcome, the proxied run's outcome (`None` when it
 /// did not run), and the proxy session's error, if any. Each `Err` holds the run's cause.
 fn build_report(
+    engine: &PolicyEngine,
+    policy_label: String,
     direct: Result<Vec<Value>, String>,
     proxied: Option<Result<Vec<Value>, String>>,
     session_error: Option<String>,
@@ -442,10 +526,13 @@ fn build_report(
     let mut lines = vec![format!("direct: {} tools", direct.len())];
     let mut failures = Vec::new();
     let mut lists_equal = false;
-    match proxied.unwrap_or_else(|| Err("the run did not start".to_string())) {
+    let proxied = proxied.unwrap_or_else(|| Err("the run did not start".to_string()));
+    let mut names: BTreeSet<&str> = direct.iter().map(tool_name).collect();
+    match &proxied {
         Ok(proxied) => {
+            names.extend(proxied.iter().map(tool_name));
             lines.push(format!("through the proxy: {} tools", proxied.len()));
-            let differences = difference_lines(&direct, &proxied);
+            let differences = difference_lines(&direct, proxied);
             lists_equal = differences.is_empty();
             if lists_equal {
                 lines.push("tool lists: equal".to_string());
@@ -460,6 +547,7 @@ fn build_report(
     if let Some(error) = &session_error {
         failures.push(format!("{CAUSE_PREFIX} through the proxy: {error}"));
     }
+    lines.extend(policy_lines(engine, &policy_label, &names));
     let passed = lists_equal && session_error.is_none();
     lines.push(format!("result: {}", if passed { "PASS" } else { "FAIL" }));
     ProbeReport {
@@ -472,6 +560,7 @@ fn build_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::time::Duration;
 
     /// Runs the handshake client against `script` as the upstream's stdout. Returns the listed
@@ -678,6 +767,158 @@ mod tests {
         assert!(
             cause.contains("initialize") && cause.contains("4194304"),
             "oversize initialize reply: {cause}"
+        );
+    }
+
+    fn embedded_default() -> PolicyEngine {
+        PolicyEngine::embedded_default().expect("the embedded default policy loads")
+    }
+
+    /// A tool object as a server lists it.
+    fn tool(name: &str) -> Value {
+        json!({"name": name, "inputSchema": {"type": "object"}})
+    }
+
+    /// The rendered lines from the `policy:` line to the end.
+    fn policy_section(render: &str) -> Vec<&str> {
+        render
+            .lines()
+            .skip_while(|line| !line.starts_with("policy: "))
+            .collect()
+    }
+
+    #[test]
+    fn probe_report_prints_the_policy_section() {
+        // One tool: every argument rule it has goes on the shared line, and its own line lists none.
+        let report = build_report(
+            &embedded_default(),
+            "embedded default".to_string(),
+            Ok(vec![tool("bash")]),
+            Some(Ok(vec![tool("bash")])),
+            None,
+        );
+        assert_eq!(
+            policy_section(&report.render()),
+            [
+                "policy: embedded default: 15 rules, 4 taint sources",
+                "outcome of a call with arguments {}:",
+                "bash: clean allow (default-allow); tainted deny (tainted-deny-shell-exec)",
+                "argument rules for every tool: deny-system-credential-files, deny-ssh-key-material, deny-aws-credentials, deny-dotenv-files, deny-destructive-shell, deny-env-dump",
+                "a listed argument rule applies only to a call whose argument text it matches, and the strongest decision among the applicable rules wins",
+                "result: PASS",
+            ],
+            "one tool"
+        );
+
+        // Several tools: the shared set prints once, each tool keeps the rest, sorted by name.
+        let tools = vec![tool("bash"), tool("fetch"), tool("read_file")];
+        let report = build_report(
+            &embedded_default(),
+            "embedded default".to_string(),
+            Ok(tools.clone()),
+            Some(Ok(tools)),
+            None,
+        );
+        assert_eq!(
+            policy_section(&report.render()),
+            [
+                "policy: embedded default: 15 rules, 4 taint sources",
+                "outcome of a call with arguments {}:",
+                "bash: clean allow (default-allow); tainted deny (tainted-deny-shell-exec); argument rules: deny-destructive-shell, deny-env-dump",
+                "fetch: clean allow (default-allow); tainted allow (default-allow); argument rules: tainted-deny-http-write-method, tainted-deny-url-query-payload",
+                "read_file: clean allow (default-allow); tainted allow (default-allow)",
+                "argument rules for every tool: deny-system-credential-files, deny-ssh-key-material, deny-aws-credentials, deny-dotenv-files",
+                "a listed argument rule applies only to a call whose argument text it matches, and the strongest decision among the applicable rules wins",
+                "result: PASS",
+            ],
+            "bash, fetch, and read_file"
+        );
+
+        // Zero tools: `no tools`, with no shared line and no explanation line.
+        let report = build_report(
+            &embedded_default(),
+            "embedded default".to_string(),
+            Ok(Vec::new()),
+            Some(Ok(Vec::new())),
+            None,
+        );
+        assert_eq!(
+            policy_section(&report.render()),
+            [
+                "policy: embedded default: 15 rules, 4 taint sources",
+                "outcome of a call with arguments {}:",
+                "no tools",
+                "result: PASS",
+            ],
+            "zero tools"
+        );
+
+        // A differ: every name from either list prints once.
+        let report = build_report(
+            &embedded_default(),
+            "embedded default".to_string(),
+            Ok(vec![tool("list_dir"), tool("read_file")]),
+            Some(Ok(vec![
+                json!({"name": "read_file", "inputSchema": {"type": "object", "required": ["path"]}}),
+                tool("write_file"),
+            ])),
+            None,
+        );
+        assert_eq!(
+            policy_section(&report.render()),
+            [
+                "policy: embedded default: 15 rules, 4 taint sources",
+                "outcome of a call with arguments {}:",
+                "list_dir: clean allow (default-allow); tainted allow (default-allow)",
+                "read_file: clean allow (default-allow); tainted allow (default-allow)",
+                "write_file: clean allow (default-allow); tainted require-approval (tainted-approve-workspace-write)",
+                "argument rules for every tool: deny-system-credential-files, deny-ssh-key-material, deny-aws-credentials, deny-dotenv-files",
+                "a listed argument rule applies only to a call whose argument text it matches, and the strongest decision among the applicable rules wins",
+                "result: FAIL",
+            ],
+            "lists that differ"
+        );
+
+        // A proxied failure: the section covers the direct list, and the result is FAIL.
+        let report = build_report(
+            &embedded_default(),
+            "embedded default".to_string(),
+            Ok(vec![tool("read_file"), tool("write_file")]),
+            Some(Err("no tools/list reply within 60 s".to_string())),
+            None,
+        );
+        assert_eq!(
+            policy_section(&report.render()),
+            [
+                "policy: embedded default: 15 rules, 4 taint sources",
+                "outcome of a call with arguments {}:",
+                "read_file: clean allow (default-allow); tainted allow (default-allow)",
+                "write_file: clean allow (default-allow); tainted require-approval (tainted-approve-workspace-write)",
+                "argument rules for every tool: deny-system-credential-files, deny-ssh-key-material, deny-aws-credentials, deny-dotenv-files",
+                "a listed argument rule applies only to a call whose argument text it matches, and the strongest decision among the applicable rules wins",
+                "result: FAIL",
+            ],
+            "proxied run failed"
+        );
+
+        // A name with a control character prints in escaped form.
+        let report = build_report(
+            &embedded_default(),
+            "embedded default".to_string(),
+            Ok(vec![tool("evil\u{1b}[31mtool")]),
+            Some(Ok(vec![tool("evil\u{1b}[31mtool")])),
+            None,
+        );
+        let render = report.render();
+        assert!(
+            policy_section(&render).contains(
+                &"evil\\u{1b}[31mtool: clean allow (default-allow); tainted allow (default-allow)"
+            ),
+            "escaped tool line missing: {render:?}"
+        );
+        assert!(
+            !render.contains('\u{1b}'),
+            "a raw control character reached the report: {render:?}"
         );
     }
 }

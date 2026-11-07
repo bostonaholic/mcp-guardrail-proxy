@@ -113,6 +113,10 @@ fn main() -> ExitCode {
             "cli_probe_fails_closed_and_names_the_cause",
             cli_probe_fails_closed_and_names_the_cause(),
         ),
+        run_test(
+            "cli_probe_reports_policy_fit_under_the_chosen_policy",
+            cli_probe_reports_policy_fit_under_the_chosen_policy(),
+        ),
     ];
     if results.iter().all(|passed| *passed) {
         ExitCode::SUCCESS
@@ -1145,5 +1149,96 @@ async fn cli_probe_fails_closed_and_names_the_cause() {
         ["mcp-guardrail-proxy: probe through the proxy: no initialize reply within 1 s"],
         "proxied timeout, stderr: {}",
         run.stderr
+    );
+}
+
+async fn cli_probe_reports_policy_fit_under_the_chosen_policy() {
+    let mock = mock_program();
+
+    // No `--policy`: the embedded default.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--", &mock],
+    )
+    .await;
+    assert_eq!(
+        count_lines(
+            &run.stdout,
+            "policy: embedded default: 15 rules, 4 taint sources"
+        ),
+        1,
+        "stdout: {} stderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stdout
+            .lines()
+            .any(|line| line.starts_with("search_files: clean allow (default-allow)")),
+        "stdout: {}",
+        run.stdout
+    );
+
+    // A policy file that denies the mock's tool: its path is the label, and its rule decides.
+    let dir = TempDir::new().expect("create a temp dir");
+    let policy_path = dir.path().join("deny-search.toml");
+    std::fs::write(
+        &policy_path,
+        r#"[[rules]]
+id = "deny-search"
+description = "Searching files is not allowed under this test policy"
+tool_regex = '^search_files$'
+decision = "deny"
+severity = "high"
+"#,
+    )
+    .expect("write the policy file");
+    let policy = policy_path.display().to_string();
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--policy", &policy, "--", &mock],
+    )
+    .await;
+    assert!(
+        run.stdout
+            .lines()
+            .any(|line| line.starts_with(&format!("policy: {policy}:"))),
+        "stdout: {} stderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stdout
+            .lines()
+            .any(|line| line.starts_with("search_files: clean deny (deny-search)")),
+        "stdout: {}",
+        run.stdout
+    );
+
+    // A policy file that does not load: exit 1 before any upstream starts.
+    let dir = TempDir::new().expect("create a temp dir");
+    let policy_path = dir.path().join("broken.toml");
+    std::fs::write(&policy_path, "[[rules]]\nid = \"unfinished\"\n")
+        .expect("write the policy file");
+    let policy = policy_path.display().to_string();
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--policy", &policy, "--", &mock],
+    )
+    .await;
+    assert_eq!(run.code, Some(1), "bad policy, stderr: {}", run.stderr);
+    assert_eq!(run.stdout, "", "bad policy");
+    assert!(
+        run.stderr.contains("mcp-guardrail-proxy: policy error:"),
+        "bad policy, stderr: {}",
+        run.stderr
+    );
+    assert!(
+        !dir.path().join("mock.log").exists(),
+        "an upstream started before the policy loaded"
     );
 }
