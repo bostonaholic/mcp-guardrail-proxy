@@ -10,8 +10,20 @@
       <h1>MCP Guardrail</h1>
       <p id="log-path" class="muted"></p>
     </header>
+    <details class="settings">
+      <summary>Settings</summary>
+      <form id="path-form">
+        <label for="path-input">Audit log path</label>
+        <input id="path-input" type="text" spellcheck="false" autocomplete="off" />
+        <button id="path-save" type="submit">Save</button>
+      </form>
+      <p id="path-variable-note" class="muted note" hidden>MCP_GUARDRAIL_AUDIT_LOG sets this path. Launch the app without it to change the path here.</p>
+      <label class="setting"><input id="notifications" type="checkbox" /> Notify me when a call is blocked</label>
+      <p id="save-error" class="banner" hidden></p>
+    </details>
     <p id="source-error" class="banner" hidden></p>
     <p id="malformed" class="banner" hidden></p>
+    <p id="settings-problem" class="banner" hidden></p>
     <section class="stats">
       <div><strong id="stat-sessions">0</strong><span>sessions</span></div>
       <div><strong id="stat-tainted">0</strong><span>tainted</span></div>

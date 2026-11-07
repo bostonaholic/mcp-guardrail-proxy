@@ -1,10 +1,13 @@
-//! Read-only tray app: watches the proxy's audit log and notifies on blocked calls.
-//! It never talks to a proxy, so it cannot weaken one, and the proxy runs the same without it.
+//! Tray app: watches the proxy's audit log and notifies on blocked calls. The only file it
+//! writes is its own settings file. It never talks to a proxy, so it cannot weaken one, and the
+//! proxy runs the same without it.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audit;
+mod monitor;
 mod notify;
+mod settings;
 #[cfg(test)]
 #[path = "../../src/machines/spec_graph.rs"]
 mod spec_graph;
@@ -12,33 +15,77 @@ mod tail;
 mod watch;
 
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use audit::{AuditEvent, Dashboard, Snapshot, alert_for, tray_status};
-use tail::Tail;
+use audit::{Snapshot, tray_status};
+use monitor::Monitor;
+use settings::{EffectiveSettings, SettingsStore, SettingsView};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
-use watch::Watch;
 
 const LOG_PATH_VARIABLE: &str = "MCP_GUARDRAIL_AUDIT_LOG";
+/// The path the README's quick start uses, relative to the home folder.
+const DEFAULT_AUDIT_LOG: &str = ".local/state/mcp-guardrail/audit.jsonl";
+const SETTINGS_FILE: &str = "settings.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const TRAY_ID: &str = "main";
+const WATCHER_STOPPED: &str =
+    "Saved. The log watcher stopped. Relaunch the app to apply the change.";
 
 type SharedSnapshot = Arc<Mutex<Snapshot>>;
+
+/// One lock covers the store and the poll thread's channel, so the thread gets settings in the
+/// order the window sets them.
+struct SettingsState {
+    store: SettingsStore,
+    sender: Sender<EffectiveSettings>,
+}
 
 #[tauri::command]
 fn snapshot(state: tauri::State<'_, SharedSnapshot>) -> Snapshot {
     state.lock().expect("the snapshot lock").clone()
 }
 
-/// The override, or the path the README's quick start uses.
-fn audit_log_path(home: PathBuf) -> PathBuf {
-    std::env::var_os(LOG_PATH_VARIABLE).map_or_else(
-        || home.join(".local/state/mcp-guardrail/audit.jsonl"),
-        PathBuf::from,
-    )
+#[tauri::command]
+fn settings(state: tauri::State<'_, Mutex<SettingsState>>) -> SettingsView {
+    state.lock().expect("the settings lock").store.view()
+}
+
+#[tauri::command]
+fn set_audit_log_path(
+    path: String,
+    state: tauri::State<'_, Mutex<SettingsState>>,
+) -> Result<SettingsView, String> {
+    let mut state = state.lock().expect("the settings lock");
+    state
+        .store
+        .set_audit_log_path(&path)
+        .map_err(|error| error.to_string())?;
+    state
+        .sender
+        .send(state.store.effective())
+        .map_err(|_| WATCHER_STOPPED.to_string())?;
+    Ok(state.store.view())
+}
+
+#[tauri::command]
+fn set_notifications(
+    on: bool,
+    state: tauri::State<'_, Mutex<SettingsState>>,
+) -> Result<SettingsView, String> {
+    let mut state = state.lock().expect("the settings lock");
+    state
+        .store
+        .set_notifications(on)
+        .map_err(|error| error.to_string())?;
+    state
+        .sender
+        .send(state.store.effective())
+        .map_err(|_| WATCHER_STOPPED.to_string())?;
+    Ok(state.store.view())
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -82,40 +129,32 @@ fn publish(
     let _ = app.emit("dashboard-updated", ());
 }
 
-/// Reads the log into the dashboard. Returns the new audit events and any read error.
-fn poll_log(tail: &mut Tail, dashboard: &mut Dashboard) -> (Vec<AuditEvent>, Option<String>) {
-    match tail.read_new_lines() {
-        Ok(lines) => (dashboard.apply_lines(&lines), None),
-        Err(error) => (Vec::new(), Some(error.to_string())),
-    }
-}
-
-/// Polls forever. A read error stays on screen, and polling continues so the app recovers.
+/// Polls until the settings channel closes. A settings message applies at once, between two
+/// polls. A read error stays on screen, and polling continues so the app recovers.
 fn watch_log(
     app: AppHandle,
     shared: SharedSnapshot,
     status_item: MenuItem<tauri::Wry>,
-    mut tail: Tail,
-    mut dashboard: Dashboard,
-    mut watch: Watch,
-    log_path: String,
+    mut monitor: Monitor,
+    settings: Receiver<EffectiveSettings>,
 ) {
     loop {
-        std::thread::sleep(POLL_INTERVAL);
-        let (events, error) = poll_log(&mut tail, &mut dashboard);
-        let actions = watch.after_poll(dashboard.revision(), error.as_deref());
-        if actions.publish {
-            publish(
-                &app,
-                &shared,
-                &status_item,
-                dashboard.snapshot(&log_path, error),
-            );
-        }
-        if actions.may_alert {
-            if let Some(alert) = alert_for(&events) {
-                notify::send(&app, &alert);
+        match settings.recv_timeout(POLL_INTERVAL) {
+            Ok(next) => {
+                if let Some(snapshot) = monitor.apply(&next) {
+                    publish(&app, &shared, &status_item, snapshot);
+                }
             }
+            Err(RecvTimeoutError::Timeout) => {
+                let polled = monitor.poll();
+                if let Some(snapshot) = polled.snapshot {
+                    publish(&app, &shared, &status_item, snapshot);
+                }
+                if let Some(alert) = polled.alert {
+                    notify::send(&app, &alert);
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     }
 }
@@ -123,7 +162,12 @@ fn watch_log(
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![snapshot])
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            settings,
+            set_audit_log_path,
+            set_notifications
+        ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -136,31 +180,21 @@ fn main() {
 
             notify::request_permission();
 
-            let path = audit_log_path(app.path().home_dir()?);
-            let log_path = path.display().to_string();
-            let mut tail = Tail::new(path);
-            let mut dashboard = Dashboard::default();
-            let mut watch = Watch::new();
-            // Lines already in the log are history: the first read that works loads them, and
-            // `watch` keeps them from raising a notification.
-            let (_, source_error) = poll_log(&mut tail, &mut dashboard);
-            watch.after_poll(dashboard.revision(), source_error.as_deref());
-            let first = dashboard.snapshot(&log_path, source_error);
+            let store = SettingsStore::load(
+                app.path().app_config_dir()?.join(SETTINGS_FILE),
+                std::env::var_os(LOG_PATH_VARIABLE).map(PathBuf::from),
+                app.path().home_dir()?.join(DEFAULT_AUDIT_LOG),
+            );
+            let (monitor, first) = Monitor::open(&store.effective());
             let status_item = build_tray(app.handle(), &tray_status(&first))?;
             let shared: SharedSnapshot = Arc::new(Mutex::new(first));
             app.manage(shared.clone());
+            let (sender, receiver) = mpsc::channel();
+            app.manage(Mutex::new(SettingsState { store, sender }));
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                watch_log(
-                    handle,
-                    shared,
-                    status_item,
-                    tail,
-                    dashboard,
-                    watch,
-                    log_path,
-                );
+                watch_log(handle, shared, status_item, monitor, receiver);
             });
             Ok(())
         })

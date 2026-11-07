@@ -343,7 +343,7 @@ Grok Bot should take the same `mcpServers` shape, but nobody has tested its form
 
 ## Desktop app
 
-`desktop/` holds a read-only tray app prototype. It watches an audit log and notifies you when a call is blocked. It is a separate crate that never talks to a proxy, so the proxy behaves the same with or without it. [INSTALL.md](INSTALL.md) installs it by default on macOS. See [desktop/README.md](desktop/README.md).
+`desktop/` holds a tray app prototype. It watches an audit log and notifies you when a call is blocked. The only file it writes is its own settings file. It is a separate crate that never talks to a proxy, so the proxy behaves the same with or without it. [INSTALL.md](INSTALL.md) installs it by default on macOS. See [desktop/README.md](desktop/README.md).
 
 ## Replay and benchmarks
 

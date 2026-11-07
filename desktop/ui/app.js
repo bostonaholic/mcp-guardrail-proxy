@@ -55,6 +55,40 @@ async function refresh() {
   render();
 }
 
+function showSettings(view) {
+  byId("path-input").value = view.audit_log_path;
+  byId("path-input").disabled = view.path_from_variable;
+  byId("path-save").disabled = view.path_from_variable;
+  byId("path-variable-note").hidden = !view.path_from_variable;
+  byId("notifications").checked = view.notifications;
+  showBanner(byId("settings-problem"), view.problem);
+}
+
+async function loadSettings() {
+  showSettings(await invoke("settings"));
+}
+
+byId("path-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    showSettings(await invoke("set_audit_log_path", { path: byId("path-input").value }));
+    showBanner(byId("save-error"), null);
+  } catch (message) {
+    showBanner(byId("save-error"), String(message));
+  }
+});
+
+byId("notifications").addEventListener("change", async (event) => {
+  try {
+    showSettings(await invoke("set_notifications", { on: event.target.checked }));
+    showBanner(byId("save-error"), null);
+  } catch (message) {
+    showBanner(byId("save-error"), String(message));
+    loadSettings();
+  }
+});
+
 byId("blocked-only").addEventListener("change", render);
 listen("dashboard-updated", refresh);
 refresh();
+loadSettings();

@@ -2,7 +2,7 @@
 
 A read-only tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked.
 
-The app only reads the log. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
+The app reads the log and writes only its own settings file. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
 
 ## Run it
 
@@ -14,13 +14,30 @@ cargo tauri build --bundles app
 open "target/release/bundle/macos/MCP Guardrail.app"
 ```
 
-The app reads `~/.local/state/mcp-guardrail/audit.jsonl`, the path in the root README's quick start. To watch another file, launch with `MCP_GUARDRAIL_AUDIT_LOG` set:
+The app reads `~/.local/state/mcp-guardrail/audit.jsonl`, the path in the root README's quick start. To watch another file, open Settings in the window and save the path of that file. You can also launch with `MCP_GUARDRAIL_AUDIT_LOG` set:
 
 ```sh
 open --env MCP_GUARDRAIL_AUDIT_LOG=/abs/path/audit.jsonl "target/release/bundle/macos/MCP Guardrail.app"
 ```
 
 Point each proxy at that file with `--audit-log`. Several proxies can share one file. macOS asks for notification permission at first launch.
+
+## Settings
+
+The Settings section in the window holds the audit log path. A saved path takes effect within one poll, with no relaunch. The dashboard then shows only the new file. Lines already in that file load as history and raise no notification.
+
+The path must be a full path that starts with `/`. The app does not expand `~`. A file that does not exist yet saves, because a proxy creates the log when it starts. A folder, a device, or a file the app cannot read shows an error, and the previous path stays. When `MCP_GUARDRAIL_AUDIT_LOG` is set, the window disables the path field.
+
+The app saves its settings to `settings.json` and reads that file at launch:
+
+- macOS: `~/Library/Application Support/com.bostonaholic.mcp-guardrail/settings.json`
+- Linux: `$XDG_CONFIG_HOME/com.bostonaholic.mcp-guardrail/settings.json`, else `~/.config/com.bostonaholic.mcp-guardrail/settings.json`
+
+At launch, `MCP_GUARDRAIL_AUDIT_LOG` wins when it is set. Then comes the saved path, then the default path.
+
+Clear the "Notify me when a call is blocked" checkbox to stop notifications. The table and the tray still update. Alerts that the app drops while the box is clear never replay when you check it again. The checkbox works while `MCP_GUARDRAIL_AUDIT_LOG` is set.
+
+If the app cannot read `settings.json` at launch, it uses the defaults and shows a banner that names the file. The next save replaces the file. To reset the settings, delete `settings.json`.
 
 ## Notifications on macOS
 
@@ -56,4 +73,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/tail.rs` and `src/watch.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/main.rs` holds the tray, the window, and the notifications. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
+`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/settings.rs` holds the app's own settings. `src/tail.rs` and `src/watch.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/main.rs` holds the tray, the window, the commands, and the poll thread. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
