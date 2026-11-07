@@ -39,16 +39,61 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 
 4. Install the desktop app. The tray app shows sessions and recent calls and notifies you when a call is blocked. It builds from a clone, and this step is for macOS. On Linux, or if the user asks for the proxy only, skip to step 5. See [desktop/README.md](desktop/README.md).
 
-   Run this block in one shell. The builds take several minutes, so give the command a timeout of at least 10 minutes.
+   Run each of the five commands that follow as its own tool call. Each one fits in a 10-minute tool timeout.
 
-   ```sh
-   cargo install tauri-cli --version "^2" --locked
-   git clone https://github.com/bostonaholic/mcp-guardrail-proxy
-   cd mcp-guardrail-proxy/desktop
-   cargo tauri build --bundles app
-   open "target/release/bundle/macos/MCP Guardrail.app"
-   mkdir -p ~/.local/state/mcp-guardrail
-   ```
+   1. Pick the source folder. Give this command a timeout of 5 minutes, because a new clone downloads the repository.
+
+      ```sh
+      (
+        set -e
+        TOP="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ -n "$TOP" ] && grep -q '"com.bostonaholic.mcp-guardrail"' "$TOP/desktop/tauri.conf.json" 2>/dev/null; then
+          SRC="$TOP"
+        elif [ -d "$HOME/.local/share/mcp-guardrail/src/.git" ]; then
+          SRC="$HOME/.local/share/mcp-guardrail/src"
+          git -C "$SRC" pull --ff-only
+        else
+          SRC="$HOME/.local/share/mcp-guardrail/src"
+          mkdir -p "$HOME/.local/share/mcp-guardrail"
+          git clone https://github.com/bostonaholic/mcp-guardrail-proxy "$SRC"
+        fi
+        printf '%s\n' "$SRC"
+      )
+      ```
+
+      The last line of the output is the source folder. `<SRC>` in the commands that follow is that path. When the current folder is in a clone of this project, the command uses that clone and never pulls it. Otherwise it uses `~/.local/share/mcp-guardrail/src`, and pulls or clones it. That folder stays after the session ends.
+   2. Install `tauri-cli` when no 2.x version is installed. Give this command a timeout of 10 minutes. The install took about 7.5 minutes on one Mac.
+
+      ```sh
+      cargo tauri --version 2>/dev/null | grep -q '^tauri-cli 2\.' || cargo install tauri-cli --version "^2" --locked
+      ```
+
+      A version check that prints `tauri-cli 2.` and a version number skips the install.
+   3. Build the app. Give this command a timeout of 10 minutes.
+
+      ```sh
+      cd "<SRC>/desktop" && cargo tauri build --bundles app -- --locked
+      ```
+
+      `--locked` keeps `desktop/Cargo.lock` unchanged, so a later `pull --ff-only` does not stop on a local change. The build is not notarized, so expect a warning that notarization was skipped. Nobody has observed that warning with these steps.
+   4. Stop a running copy, replace the app in `~/Applications`, and open it. Give this command a timeout of 1 minute.
+
+      ```sh
+      pkill -f '/MCP Guardrail[.]app/Contents/MacOS/' || true
+      rm -rf "$HOME/Applications/MCP Guardrail.app"
+      mkdir -p "$HOME/Applications"
+      ditto "<SRC>/desktop/target/release/bundle/macos/MCP Guardrail.app" "$HOME/Applications/MCP Guardrail.app"
+      open "$HOME/Applications/MCP Guardrail.app"
+      ```
+
+      `ditto` keeps the bundle signature. The `rm -rf` comes first, because `ditto` onto an old bundle keeps files that the new version deleted.
+   5. Check that the app runs. Give this command a timeout of 1 minute.
+
+      ```sh
+      pgrep -f '/MCP Guardrail[.]app/Contents/MacOS/'
+      ```
+
+      Expect one process id. If none prints, wait 5 s and run it once more. If none prints again, stop. At first launch, macOS asks the user for notification permission. Do not wait for the answer.
 
 5. Find the servers. Read the configs yourself, and do not ask for a client or a path.
 
@@ -164,7 +209,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 
 The binary embeds `policies/default-policy.toml`. To change the rules, copy that file, edit the copy, and pass it with `--policy`. Run `check-policy --policy <file>` on the edited copy before you wire it in.
 
-From a clone, run `cargo install --path . --locked` in place of step 2, and leave out `git clone` in step 4.
+From a clone, run `cargo install --path . --locked` in place of step 2.
 
 Releases after 0.2.0 attach a prebuilt binary for macOS and Linux, so you can skip Rust and steps 1 and 2. Download `mcp-guardrail-proxy-<version>-<platform>.tar.gz` from the [releases page](https://github.com/bostonaholic/mcp-guardrail-proxy/releases), then run this block in the download folder. It puts the binary in `~/.local/bin`, which must be on your `PATH` for step 3. The `xattr` line is for macOS, which blocks a binary that a browser downloaded.
 
