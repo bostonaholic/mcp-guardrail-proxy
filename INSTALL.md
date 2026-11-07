@@ -253,3 +253,46 @@ Undo needs no backup. It rebuilds each original entry from its wrapped entry, so
 
    If the request covers Claude Code and the record does not exist, say so. Then rebuild each wrapped user-scope server as a user-scope row, and enable no plugin. Tell the user to run `claude plugin enable` for each plugin they want back.
 5. Report each row that now has a full path where the original had a bare or relative command. That path runs the same program. Then name the clients to restart, with the restart from the client reference.
+
+## Uninstall
+
+`INSTALL.md` owns these paths, and Uninstall removes only them:
+
+- `~/Applications/MCP Guardrail.app`
+- `~/.local/state/mcp-guardrail/`, which holds the audit log and `plugin-moves.json`
+- each `<file>.bak-guardrail`
+- the binary, at the cargo path of step 3 or at `~/.local/bin/mcp-guardrail-proxy`
+
+The user owns the removal of `~/.local/share/mcp-guardrail/src`, because a clone can hold their own work.
+
+Do these steps in order. Ask no question.
+
+1. Run the step 5 scan. Before any undo write, note each distinct `command` of the `already wrapped` rows. Resolve a bare `mcp-guardrail-proxy` with the `BIN` line of step 3. If no row is wrapped, note the output of that line.
+2. Run [Undo](#undo) for every wired row. If Undo reports a row that it did not undo, other than a `project folder gone` row, stop here. List those rows and remove nothing, so they keep working in their clients.
+3. Stop the app and remove it:
+
+   ```sh
+   pkill -f '/MCP Guardrail[.]app/Contents/MacOS/' || true
+   rm -rf "$HOME/Applications/MCP Guardrail.app"
+   ```
+
+4. Run the step 5 scan again. List each row with the note `an arg names mcp-guardrail-proxy`. Warn the user that such a row stops working if it runs the binary through an outer command, such as `env`. Do not stop for these rows.
+5. Remove each binary that step 1 noted, by the first rule that its path matches:
+   - `${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin/mcp-guardrail-proxy`: run `cargo uninstall mcp-guardrail-proxy`.
+   - `$HOME/.local/bin/mcp-guardrail-proxy`: run `command rm -f -- "$HOME/.local/bin/mcp-guardrail-proxy"`.
+   - Any other path, or a path that does not exist: leave it, and name it in the report.
+6. Leave `~/.local/share/mcp-guardrail/src` and its parent folder in place. If the clone exists, name it in the report, and say that it can hold the user's own work. Give the user these two commands to run after they check it. Do not run them yourself.
+
+   ```sh
+   rm -rf "$HOME/.local/share/mcp-guardrail/src"
+   rmdir "$HOME/.local/share/mcp-guardrail"
+   ```
+
+7. Name the audit log, `~/.local/state/mcp-guardrail/audit.jsonl`, in the report. It is the only record of the proxy's decisions. Then remove its folder:
+
+   ```sh
+   rm -rf "$HOME/.local/state/mcp-guardrail"
+   ```
+
+8. For each config file in the client reference for this platform, and for `~/.claude/settings.json`, remove `<file>.bak-guardrail` if it exists. Use `command rm -f -- '<file>.bak-guardrail'`.
+9. Run `cargo uninstall tauri-cli` only when the user's request names `tauri-cli`.
