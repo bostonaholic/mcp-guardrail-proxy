@@ -37,7 +37,7 @@ pub const MAX_STDERR_LINE_BYTES: usize = 64 * 1024;
 pub const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 /// How long a child may run after its stdin closes before the proxy kills it.
-const CHILD_EXIT_GRACE: Duration = Duration::from_secs(5);
+pub(crate) const CHILD_EXIT_GRACE: Duration = Duration::from_secs(5);
 /// Lines waiting for host output; a full queue stalls the producers instead of growing memory.
 const WRITER_QUEUE_LINES: usize = 64;
 const TOOLS_CALL_METHOD: &str = "tools/call";
@@ -582,7 +582,7 @@ fn encode_reply(response: JsonRpcResponse) -> Vec<u8> {
 }
 
 /// Reads through the end of the next line, never holding more than the framer's cap of it.
-async fn read_capped_line<R: AsyncBufRead + Unpin>(
+pub(crate) async fn read_capped_line<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     framer: &mut LineFramer,
 ) -> io::Result<LineEnd> {

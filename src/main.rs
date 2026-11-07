@@ -1,17 +1,23 @@
-//! Command line for the guardrail proxy: run it, replay a corpus, or check a policy.
+//! Command line for the guardrail proxy: run it, replay a corpus, check a policy, or probe a server.
 
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use mcp_guardrail_proxy::control_plane::{AuditSink, PendingApprovalBroker};
 use mcp_guardrail_proxy::policy::{PolicyEngine, PolicyError};
+use mcp_guardrail_proxy::probe::run_probe;
 use mcp_guardrail_proxy::proxy::{ProxyConfig, ProxyError, run_stdio_proxy};
 use mcp_guardrail_proxy::replay::{ReplayCorpus, run_replay};
 use mcp_guardrail_proxy::telemetry::{JsonlAuditSink, SharedLineWriter};
+
+/// Seconds each `probe` run may take when `--timeout` is absent.
+const DEFAULT_PROBE_TIMEOUT_SECS: u64 = 60;
+/// The largest `--timeout` that `probe` accepts.
+const MAX_PROBE_TIMEOUT_SECS: u64 = 3600;
 
 /// Taint-aware guardrails for MCP tool calls.
 #[derive(Parser)]
@@ -53,6 +59,22 @@ enum Command {
         #[arg(long)]
         policy: Option<PathBuf>,
     },
+    /// List an upstream server's tools directly and through the proxy, and compare them.
+    Probe {
+        /// The policy file; without it, the embedded default policy applies.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Seconds each run may take, from 1 to 3600.
+        #[arg(
+            long,
+            default_value_t = DEFAULT_PROBE_TIMEOUT_SECS,
+            value_parser = clap::value_parser!(u64).range(1..=MAX_PROBE_TIMEOUT_SECS)
+        )]
+        timeout: u64,
+        /// The upstream server's program and arguments, after `--`.
+        #[arg(last = true, required = true)]
+        upstream: Vec<String>,
+    },
 }
 
 /// `<pid>-<unix_millis>`.
@@ -78,6 +100,11 @@ fn main() -> ExitCode {
         ),
         Command::Replay { policy, corpus } => run_replay_command(policy.as_deref(), &corpus),
         Command::CheckPolicy { policy } => run_check_policy(policy.as_deref()),
+        Command::Probe {
+            policy,
+            timeout,
+            upstream,
+        } => run_probe_command(policy.as_deref(), timeout, &upstream),
     }
 }
 
@@ -86,6 +113,14 @@ fn load_engine(policy: Option<&Path>) -> Result<PolicyEngine, PolicyError> {
     match policy {
         Some(path) => PolicyEngine::from_path(path),
         None => PolicyEngine::embedded_default(),
+    }
+}
+
+/// The name of the policy at `policy` in command output: its path, or `embedded default`.
+fn policy_label(policy: Option<&Path>) -> String {
+    match policy {
+        Some(path) => path.display().to_string(),
+        None => "embedded default".to_string(),
     }
 }
 
@@ -180,12 +215,9 @@ fn run_replay_command(policy: Option<&Path>, corpus: &std::path::Path) -> ExitCo
 fn run_check_policy(policy: Option<&Path>) -> ExitCode {
     match load_engine(policy) {
         Ok(engine) => {
-            let source = match policy {
-                Some(path) => path.display().to_string(),
-                None => "embedded default".to_string(),
-            };
             println!(
-                "policy OK: {source}: {} rules, {} taint sources",
+                "policy OK: {}: {} rules, {} taint sources",
+                policy_label(policy),
                 engine.rule_count(),
                 engine.taint_source_count()
             );
@@ -195,5 +227,43 @@ fn run_check_policy(policy: Option<&Path>) -> ExitCode {
             eprintln!("policy error: {error}");
             ExitCode::from(1)
         }
+    }
+}
+
+fn run_probe_command(policy: Option<&Path>, timeout: u64, upstream: &[String]) -> ExitCode {
+    let engine = match load_engine(policy) {
+        Ok(engine) => engine,
+        Err(error) => {
+            eprintln!("mcp-guardrail-proxy: policy error: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("mcp-guardrail-proxy: cannot start the async runtime: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let report = runtime.block_on(run_probe(
+        upstream,
+        engine,
+        policy_label(policy),
+        Duration::from_secs(timeout),
+    ));
+    let render = report.render();
+    if !render.is_empty() {
+        println!("{render}");
+    }
+    for failure in report.failures() {
+        eprintln!("{failure}");
+    }
+    if report.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }

@@ -25,6 +25,12 @@ const DEFAULT_POLICY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/policies/defa
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MOCK_STDERR_LINE: &str = r#"{"level":"info","msg":"mock-upstream ready"}"#;
 const PIPE_DIAGNOSTIC: &str = "mcp-guardrail-proxy: child pipe still open after exit";
+/// The text that marks each `probe` cause line on stderr.
+const PROBE_CAUSE: &str = "mcp-guardrail-proxy: probe";
+/// The environment that makes a child of the CLI run this test binary as the mock, logging to
+/// `mock.log` in the CLI's working directory.
+const MOCK_UPSTREAM_ENV: (&str, &str) = ("MCP_GUARDRAIL_MOCK_UPSTREAM", "1");
+const MOCK_LOG_ENV: (&str, &str) = ("MCP_GUARDRAIL_MOCK_LOG", "mock.log");
 
 // Host frames in canonical encoding: struct field order, sorted keys inside
 // `params`, no spaces. The mock log compares them byte for byte.
@@ -99,6 +105,18 @@ fn main() -> ExitCode {
             "cli_denies_shadow_read_with_the_embedded_default_policy",
             cli_denies_shadow_read_with_the_embedded_default_policy(),
         ),
+        run_test(
+            "cli_probe_passes_when_both_runs_list_the_same_tools",
+            cli_probe_passes_when_both_runs_list_the_same_tools(),
+        ),
+        run_test(
+            "cli_probe_fails_closed_and_names_the_cause",
+            cli_probe_fails_closed_and_names_the_cause(),
+        ),
+        run_test(
+            "cli_probe_reports_policy_fit_under_the_chosen_policy",
+            cli_probe_reports_policy_fit_under_the_chosen_policy(),
+        ),
     ];
     if results.iter().all(|passed| *passed) {
         ExitCode::SUCCESS
@@ -125,8 +143,22 @@ fn run_test(name: &str, test: impl Future<Output = ()>) -> bool {
     passed
 }
 
+/// Whether the mock switch `name` is set to `1`.
+fn mock_switch(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| value == "1")
+}
+
 /// The mock upstream MCP server. It appends every received line to
 /// `MCP_GUARDRAIL_MOCK_LOG` and answers requests with one line each.
+///
+/// Each start counts the `initialize` lines already in its log, so a later
+/// start in the same log knows it is not the first. Switches, each set to `1`:
+/// - `MCP_GUARDRAIL_MOCK_INITIALIZE_ERROR`: answer `initialize` with an error.
+/// - `MCP_GUARDRAIL_MOCK_SILENT`: never reply.
+/// - `MCP_GUARDRAIL_MOCK_TOOLS_CHANGE_ON_SECOND_START`: list three tools, and
+///   a changed list from the second start on.
+/// - `MCP_GUARDRAIL_MOCK_SILENT_ON_SECOND_START`: from the second start on,
+///   never reply, and at stdin EOF write 256 lines of 1 KiB before exiting.
 fn mock_upstream() -> ExitCode {
     if let Some(code) = std::env::var_os("MCP_GUARDRAIL_MOCK_EXIT_CODE") {
         if std::env::var_os("MCP_GUARDRAIL_MOCK_HOLD_PIPES").is_some_and(|hold| hold == "1") {
@@ -150,6 +182,14 @@ fn mock_upstream() -> ExitCode {
     }
     let log_path =
         std::env::var_os("MCP_GUARDRAIL_MOCK_LOG").expect("MCP_GUARDRAIL_MOCK_LOG is set");
+    let earlier_starts = std::fs::read_to_string(&log_path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains(r#""method":"initialize""#))
+        .count();
+    let start = earlier_starts + 1;
+    let silent = mock_switch("MCP_GUARDRAIL_MOCK_SILENT")
+        || (mock_switch("MCP_GUARDRAIL_MOCK_SILENT_ON_SECOND_START") && start > 1);
     let mut log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -161,11 +201,24 @@ fn mock_upstream() -> ExitCode {
     loop {
         line.clear();
         if input.read_line(&mut line).expect("read a forwarded line") == 0 {
+            if mock_switch("MCP_GUARDRAIL_MOCK_SILENT_ON_SECOND_START") && start > 1 {
+                // More output than a 64 KiB pipe holds, sent only after input closed.
+                let pending_line = format!("{}\n", "x".repeat(1023));
+                for _ in 0..256 {
+                    stdout
+                        .write_all(pending_line.as_bytes())
+                        .expect("write pending output");
+                }
+                stdout.flush().expect("flush stdout");
+            }
             return ExitCode::SUCCESS;
         }
         log.write_all(line.as_bytes())
             .expect("append to the mock log");
-        if let Some(reply) = mock_reply(line.trim_end_matches('\n')) {
+        if silent {
+            continue;
+        }
+        if let Some(reply) = mock_reply(line.trim_end_matches('\n'), start) {
             stdout
                 .write_all(format!("{reply}\n").as_bytes())
                 .expect("write a reply");
@@ -174,9 +227,9 @@ fn mock_upstream() -> ExitCode {
     }
 }
 
-/// The mock's reply to one forwarded frame, or `None` for a notification or
-/// a response.
-fn mock_reply(line: &str) -> Option<String> {
+/// The mock's reply to one forwarded frame on its `start`-th start, or `None`
+/// for a notification or a response.
+fn mock_reply(line: &str, start: usize) -> Option<String> {
     let frame: Value = serde_json::from_str(line).expect("the proxy forwards JSON frames");
     let method = frame.get("method")?.as_str()?;
     let id = frame.get("id")?.clone();
@@ -186,10 +239,38 @@ fn mock_reply(line: &str) -> Option<String> {
             std::io::stderr()
                 .write_all(format!("{MOCK_STDERR_LINE}\n").as_bytes())
                 .expect("write the stderr line");
-            (
-                "result",
-                json!({"protocolVersion": "2025-06-18", "capabilities": {"tools": {}, "resources": {}}, "serverInfo": {"name": "mock-upstream", "version": "0.0.0"}}),
-            )
+            if mock_switch("MCP_GUARDRAIL_MOCK_INITIALIZE_ERROR") {
+                (
+                    "error",
+                    json!({"code": -32603, "message": "mock initialize failure"}),
+                )
+            } else {
+                (
+                    "result",
+                    json!({"protocolVersion": "2025-06-18", "capabilities": {"tools": {}, "resources": {}}, "serverInfo": {"name": "mock-upstream", "version": "0.0.0"}}),
+                )
+            }
+        }
+        "tools/list" if mock_switch("MCP_GUARDRAIL_MOCK_TOOLS_CHANGE_ON_SECOND_START") => {
+            if start == 1 {
+                (
+                    "result",
+                    json!({"tools": [
+                        {"name": "list_dir", "inputSchema": {"type": "object"}},
+                        {"name": "read_file", "inputSchema": {"type": "object"}},
+                        {"name": "search_files", "inputSchema": {"type": "object"}},
+                    ]}),
+                )
+            } else {
+                (
+                    "result",
+                    json!({"tools": [
+                        {"name": "search_files", "inputSchema": {"type": "object"}},
+                        {"name": "read_file", "inputSchema": {"type": "object", "required": ["path"]}},
+                        {"name": "write_file", "inputSchema": {"type": "object"}},
+                    ]}),
+                )
+            }
         }
         "tools/list" => (
             "result",
@@ -738,4 +819,426 @@ async fn cli_denies_shadow_read_with_the_embedded_default_policy() {
     let reply: Value = serde_json::from_str(lines[0]).expect("the reply is JSON");
     assert_eq!(reply["id"], json!(1));
     assert_eq!(reply["error"]["code"], json!(-32001));
+}
+
+/// What one run of the CLI binary printed, and its exit code.
+struct CliRun {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+impl CliRun {
+    fn last_stdout_line(&self) -> Option<&str> {
+        self.stdout.lines().last()
+    }
+
+    /// The stderr lines that hold the probe cause text.
+    fn probe_cause_lines(&self) -> Vec<&str> {
+        self.stderr
+            .lines()
+            .filter(|line| line.contains(PROBE_CAUSE))
+            .collect()
+    }
+}
+
+/// Runs the CLI binary with `args`, in `dir`, with `env` added to its own
+/// environment. The CLI must exit within 3 s.
+async fn run_cli(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> CliRun {
+    let cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_mcp-guardrail-proxy"))
+        .args(args)
+        .envs(env.iter().copied())
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn the CLI binary");
+    let output = tokio::time::timeout(Duration::from_secs(3), cli.wait_with_output())
+        .await
+        .unwrap_or_else(|_| panic!("the CLI exits within 3 s: {args:?}"))
+        .expect("wait for the CLI");
+    CliRun {
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// This test binary's path, which runs as the mock under `MOCK_UPSTREAM_ENV`.
+fn mock_program() -> String {
+    std::env::current_exe()
+        .expect("the test binary path")
+        .display()
+        .to_string()
+}
+
+/// The upstream is this test binary with no `env` wrapper, so the mock
+/// variables and the relative log path reach both runs only through the
+/// probe's own environment and working directory.
+async fn cli_probe_passes_when_both_runs_list_the_same_tools() {
+    let dir = TempDir::new().expect("create a temp dir");
+    let mock = mock_program();
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--", &mock],
+    )
+    .await;
+    assert_eq!(
+        run.code,
+        Some(0),
+        "stdout: {} stderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    assert_eq!(
+        count_lines(&run.stdout, "direct: 1 tools"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        count_lines(&run.stdout, "through the proxy: 1 tools"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        count_lines(&run.stdout, "tool lists: equal"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        run.last_stdout_line(),
+        Some("result: PASS"),
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        count_lines(&run.stderr, MOCK_STDERR_LINE),
+        2,
+        "the mock's ready line from each run, stderr: {}",
+        run.stderr
+    );
+    assert_eq!(
+        run.probe_cause_lines(),
+        Vec::<&str>::new(),
+        "stderr: {}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("mcp_guardrail_audit"),
+        "the probe wrote an audit line: {}",
+        run.stderr
+    );
+}
+
+/// One row per non-zero end the binary can reach. Each row gets its own
+/// folder, because the mock counts its starts from its log.
+async fn cli_probe_fails_closed_and_names_the_cause() {
+    let mock = mock_program();
+
+    // Usage errors: exit 2 and nothing on stdout.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--timeout", "0", "--", &mock],
+    )
+    .await;
+    assert_eq!(run.code, Some(2), "--timeout 0, stderr: {}", run.stderr);
+    assert_eq!(run.stdout, "", "--timeout 0");
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--timeout", "3601", "--", &mock],
+    )
+    .await;
+    assert_eq!(run.code, Some(2), "--timeout 3601, stderr: {}", run.stderr);
+    assert_eq!(run.stdout, "", "--timeout 3601");
+    let run = run_cli(dir.path(), &[], &["probe", "--"]).await;
+    assert_eq!(run.code, Some(2), "no upstream, stderr: {}", run.stderr);
+    assert_eq!(run.stdout, "", "no upstream");
+
+    // A missing program: the spawn error names it.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[],
+        &["probe", "--", "/nonexistent/mcp-guardrail-probe-missing"],
+    )
+    .await;
+    assert_eq!(run.code, Some(1), "missing program, stderr: {}", run.stderr);
+    assert_eq!(run.stdout, "", "missing program");
+    let causes = run.probe_cause_lines();
+    assert_eq!(causes.len(), 1, "missing program, stderr: {}", run.stderr);
+    assert!(
+        causes[0].contains(
+            "failed to start the upstream command: /nonexistent/mcp-guardrail-probe-missing:"
+        ),
+        "missing program, stderr: {}",
+        run.stderr
+    );
+
+    // The handshake fails: `initialize` gets an error reply.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[
+            MOCK_UPSTREAM_ENV,
+            MOCK_LOG_ENV,
+            ("MCP_GUARDRAIL_MOCK_INITIALIZE_ERROR", "1"),
+        ],
+        &["probe", "--", &mock],
+    )
+    .await;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "initialize error, stderr: {}",
+        run.stderr
+    );
+    assert_eq!(run.stdout, "", "initialize error");
+    let causes = run.probe_cause_lines();
+    assert_eq!(causes.len(), 1, "initialize error, stderr: {}", run.stderr);
+    assert!(
+        causes[0].contains("initialize")
+            && causes[0].contains("-32603")
+            && causes[0].contains("mock initialize failure"),
+        "initialize error, stderr: {}",
+        run.stderr
+    );
+
+    // The upstream exits before it replies: the cause names the step and the exit code.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[
+            MOCK_UPSTREAM_ENV,
+            MOCK_LOG_ENV,
+            ("MCP_GUARDRAIL_MOCK_EXIT_CODE", "3"),
+        ],
+        &["probe", "--", &mock],
+    )
+    .await;
+    assert_eq!(run.code, Some(1), "early exit, stderr: {}", run.stderr);
+    assert_eq!(run.stdout, "", "early exit");
+    let causes = run.probe_cause_lines();
+    assert_eq!(causes.len(), 1, "early exit, stderr: {}", run.stderr);
+    assert!(
+        causes[0].contains("initialize") && causes[0].contains("exit code 3"),
+        "early exit, stderr: {}",
+        run.stderr
+    );
+
+    // The upstream never answers: the direct run times out.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[
+            MOCK_UPSTREAM_ENV,
+            MOCK_LOG_ENV,
+            ("MCP_GUARDRAIL_MOCK_SILENT", "1"),
+        ],
+        &["probe", "--timeout", "1", "--", &mock],
+    )
+    .await;
+    assert_eq!(run.code, Some(1), "silent, stderr: {}", run.stderr);
+    assert_eq!(run.stdout, "", "silent");
+    assert_eq!(
+        run.probe_cause_lines(),
+        ["mcp-guardrail-proxy: probe direct: no initialize reply within 1 s"],
+        "silent, stderr: {}",
+        run.stderr
+    );
+
+    // The tool list changes on the second start: one tool dropped, one added, one
+    // redefined, and one unchanged tool listed in another position.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[
+            MOCK_UPSTREAM_ENV,
+            MOCK_LOG_ENV,
+            ("MCP_GUARDRAIL_MOCK_TOOLS_CHANGE_ON_SECOND_START", "1"),
+        ],
+        &["probe", "--", &mock],
+    )
+    .await;
+    assert_eq!(run.code, Some(1), "lists differ, stderr: {}", run.stderr);
+    assert_eq!(
+        count_lines(&run.stdout, "direct: 3 tools"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        count_lines(&run.stdout, "through the proxy: 3 tools"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        count_lines(&run.stdout, "tool lists: differ"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        count_lines(&run.stdout, "only direct: list_dir"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        count_lines(&run.stdout, "only through the proxy: write_file"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        count_lines(&run.stdout, "definition differs: read_file"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        run.last_stdout_line(),
+        Some("result: FAIL"),
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        run.probe_cause_lines(),
+        ["mcp-guardrail-proxy: probe: the tool lists differ"],
+        "lists differ, stderr: {}",
+        run.stderr
+    );
+
+    // The second start never answers and has 256 KiB pending at stdin EOF: the
+    // proxied run times out, and the probe still reads host output to its end.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[
+            MOCK_UPSTREAM_ENV,
+            MOCK_LOG_ENV,
+            ("MCP_GUARDRAIL_MOCK_SILENT_ON_SECOND_START", "1"),
+        ],
+        &["probe", "--timeout", "1", "--", &mock],
+    )
+    .await;
+    assert_eq!(run.code, Some(1), "proxied timeout, stderr: {}", run.stderr);
+    assert_eq!(
+        count_lines(&run.stdout, "direct: 1 tools"),
+        1,
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        run.last_stdout_line(),
+        Some("result: FAIL"),
+        "stdout: {}",
+        run.stdout
+    );
+    assert_eq!(
+        run.probe_cause_lines(),
+        ["mcp-guardrail-proxy: probe through the proxy: no initialize reply within 1 s"],
+        "proxied timeout, stderr: {}",
+        run.stderr
+    );
+}
+
+async fn cli_probe_reports_policy_fit_under_the_chosen_policy() {
+    let mock = mock_program();
+
+    // No `--policy`: the embedded default.
+    let dir = TempDir::new().expect("create a temp dir");
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--", &mock],
+    )
+    .await;
+    assert_eq!(
+        count_lines(
+            &run.stdout,
+            "policy: embedded default: 15 rules, 4 taint sources"
+        ),
+        1,
+        "stdout: {} stderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stdout
+            .lines()
+            .any(|line| line.starts_with("search_files: clean allow (default-allow)")),
+        "stdout: {}",
+        run.stdout
+    );
+
+    // A policy file that denies the mock's tool: its path is the label, and its rule decides.
+    let dir = TempDir::new().expect("create a temp dir");
+    let policy_path = dir.path().join("deny-search.toml");
+    std::fs::write(
+        &policy_path,
+        r#"[[rules]]
+id = "deny-search"
+description = "Searching files is not allowed under this test policy"
+tool_regex = '^search_files$'
+decision = "deny"
+severity = "high"
+"#,
+    )
+    .expect("write the policy file");
+    let policy = policy_path.display().to_string();
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--policy", &policy, "--", &mock],
+    )
+    .await;
+    assert!(
+        run.stdout
+            .lines()
+            .any(|line| line.starts_with(&format!("policy: {policy}:"))),
+        "stdout: {} stderr: {}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stdout
+            .lines()
+            .any(|line| line.starts_with("search_files: clean deny (deny-search)")),
+        "stdout: {}",
+        run.stdout
+    );
+
+    // A policy file that does not load: exit 1 before any upstream starts.
+    let dir = TempDir::new().expect("create a temp dir");
+    let policy_path = dir.path().join("broken.toml");
+    std::fs::write(&policy_path, "[[rules]]\nid = \"unfinished\"\n")
+        .expect("write the policy file");
+    let policy = policy_path.display().to_string();
+    let run = run_cli(
+        dir.path(),
+        &[MOCK_UPSTREAM_ENV, MOCK_LOG_ENV],
+        &["probe", "--policy", &policy, "--", &mock],
+    )
+    .await;
+    assert_eq!(run.code, Some(1), "bad policy, stderr: {}", run.stderr);
+    assert_eq!(run.stdout, "", "bad policy");
+    assert!(
+        run.stderr.contains("mcp-guardrail-proxy: policy error:"),
+        "bad policy, stderr: {}",
+        run.stderr
+    );
+    assert!(
+        !dir.path().join("mock.log").exists(),
+        "an upstream started before the policy loaded"
+    );
 }

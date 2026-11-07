@@ -14,6 +14,8 @@ cargo tauri build --bundles app
 open "target/release/bundle/macos/MCP Guardrail.app"
 ```
 
+A build from a clone stays in `target/release/bundle/macos/`. [INSTALL.md](../INSTALL.md) copies it to `~/Applications/MCP Guardrail.app` and opens that copy.
+
 The app reads `~/.local/state/mcp-guardrail/audit.jsonl`, the path in the root README's quick start. To watch another file, open Settings in the window and save the path of that file. You can also launch with `MCP_GUARDRAIL_AUDIT_LOG` set:
 
 ```sh

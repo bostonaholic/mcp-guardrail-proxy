@@ -5,6 +5,7 @@
 pub mod control_plane;
 pub mod machines;
 pub mod policy;
+pub mod probe;
 pub mod protocol;
 pub mod proxy;
 pub mod replay;
