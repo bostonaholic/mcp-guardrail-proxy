@@ -14,13 +14,17 @@ cargo tauri build --bundles app
 open "target/release/bundle/macos/MCP Guardrail.app"
 ```
 
-The app reads `~/.local/state/mcp-guardrail/audit.jsonl`, the path in the root README's quick start. To watch another file, launch with `MCP_GUARDRAIL_AUDIT_LOG` set:
+The app reads `~/.local/state/mcp-guardrail/audit.jsonl`, the path in the root README's quick start. To watch another file, open Settings in the window and save the path of that file. You can also launch with `MCP_GUARDRAIL_AUDIT_LOG` set:
 
 ```sh
 open --env MCP_GUARDRAIL_AUDIT_LOG=/abs/path/audit.jsonl "target/release/bundle/macos/MCP Guardrail.app"
 ```
 
 Point each proxy at that file with `--audit-log`. Several proxies can share one file. macOS asks for notification permission at first launch.
+
+## Settings
+
+The Settings section in the window holds the audit log path. A saved path takes effect within one poll, with no relaunch. The dashboard then shows only the new file. Lines already in that file load as history and raise no notification.
 
 ## Notifications on macOS
 
@@ -56,4 +60,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/tail.rs` and `src/watch.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/main.rs` holds the tray, the window, and the notifications. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
+`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/settings.rs` holds the app's own settings. `src/tail.rs` and `src/watch.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/main.rs` holds the tray, the window, the commands, and the poll thread. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.

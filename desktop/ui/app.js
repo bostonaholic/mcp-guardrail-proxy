@@ -55,6 +55,25 @@ async function refresh() {
   render();
 }
 
+function showSettings(view) {
+  byId("path-input").value = view.audit_log_path;
+}
+
+async function loadSettings() {
+  showSettings(await invoke("settings"));
+}
+
+byId("path-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    showSettings(await invoke("set_audit_log_path", { path: byId("path-input").value }));
+    showBanner(byId("save-error"), null);
+  } catch (message) {
+    showBanner(byId("save-error"), String(message));
+  }
+});
+
 byId("blocked-only").addEventListener("change", render);
 listen("dashboard-updated", refresh);
 refresh();
+loadSettings();

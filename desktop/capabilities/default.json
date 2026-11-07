@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window reads the dashboard and listens for updates.",
+  "description": "The main window reads the dashboard and its settings, changes the settings, and listens for updates.",
   "windows": ["main"],
   "permissions": ["core:event:default"]
 }

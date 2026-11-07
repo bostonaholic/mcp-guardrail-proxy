@@ -10,6 +10,15 @@
       <h1>MCP Guardrail</h1>
       <p id="log-path" class="muted"></p>
     </header>
+    <details class="settings">
+      <summary>Settings</summary>
+      <form id="path-form">
+        <label for="path-input">Audit log path</label>
+        <input id="path-input" type="text" spellcheck="false" autocomplete="off" />
+        <button type="submit">Save</button>
+      </form>
+      <p id="save-error" class="banner" hidden></p>
+    </details>
     <p id="source-error" class="banner" hidden></p>
     <p id="malformed" class="banner" hidden></p>
     <section class="stats">

@@ -55,6 +55,8 @@ Each spec has a `*Broken.tla` variant that must fail, which proves the check can
 | `ApprovalOutcome` | One answer per call, held nowhere. `CallPhase` covers it. |
 | `run_replay` | A loop over the corpus. Its only state is an `Interceptor`. |
 | `latest` in `desktop/ui/app.js` | Empty until the first snapshot, then the last snapshot. |
+| `Monitor` in `desktop/src/monitor.rs` | Its only own state is the watched path. A message compares one path with it once, like `latest`. `TailCursor` and `Watch` keep the event-order rules under their own specs. |
+| `SettingsStore` in `desktop/src/settings.rs` | It holds the last saved values. Each save replaces them, and no rule reads the order of earlier saves. |
 | Window shown or hidden, notification permission | Held by Tauri and the OS, not by this code. |
 
 ## Adding or changing a machine
