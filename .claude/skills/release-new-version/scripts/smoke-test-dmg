@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Mounts a macOS disk image and checks the app inside: version, bundle id, architecture, and a
+# signature whose identifier matches the bundle id, which macOS notifications need. macOS only.
+#
+# Usage: smoke-test-dmg <path-to-dmg> <X.Y.Z> <arm64|x86_64>
+# Output: "ok <version> <bundle-id> <architecture>".
+# Exit codes: 0 good; 1 a check failed; 2 a required tool is missing.
+set -euo pipefail
+
+SKILL=".claude/skills/release-new-version/SKILL.md"
+BUNDLE_ID="com.bostonaholic.mcp-guardrail"
+dmg="${1:-}"
+version="${2:-}"
+architecture="${3:-}"
+
+fail() {
+  echo "smoke-test-dmg: $1 (see $SKILL)" >&2
+  exit 1
+}
+
+for tool in codesign hdiutil lipo plutil; do
+  command -v "$tool" >/dev/null || { echo "smoke-test-dmg: $tool is not installed (see $SKILL)" >&2; exit 2; }
+done
+[ -f "$dmg" ] && [ -n "$version" ] && [ -n "$architecture" ] ||
+  fail "usage: smoke-test-dmg <path-to-dmg> <X.Y.Z> <arm64|x86_64>"
+
+mount_point="$(mktemp -d)"
+trap 'hdiutil detach -quiet "$mount_point" || true; rmdir "$mount_point"' EXIT
+hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mount_point" "$dmg"
+
+app="$mount_point/MCP Guardrail.app"
+[ -d "$app" ] || fail "no MCP Guardrail.app in $dmg"
+
+plist="$app/Contents/Info.plist"
+actual_version="$(plutil -extract CFBundleShortVersionString raw "$plist")"
+[ "$actual_version" = "$version" ] || fail "app version is $actual_version, expected $version"
+actual_id="$(plutil -extract CFBundleIdentifier raw "$plist")"
+[ "$actual_id" = "$BUNDLE_ID" ] || fail "bundle id is $actual_id, expected $BUNDLE_ID"
+
+executable="$app/Contents/MacOS/$(plutil -extract CFBundleExecutable raw "$plist")"
+lipo "$executable" -verify_arch "$architecture" || fail "executable is not $architecture"
+
+codesign --verify --strict "$app" || fail "the signature does not verify"
+signed_id="$(codesign --display --verbose=2 "$app" 2>&1 | sed -n 's/^Identifier=//p')"
+[ "$signed_id" = "$BUNDLE_ID" ] || fail "signature identifier is $signed_id, expected $BUNDLE_ID"
+
+echo "ok $actual_version $actual_id $architecture"

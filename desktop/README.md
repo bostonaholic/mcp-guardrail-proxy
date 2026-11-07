@@ -24,7 +24,7 @@ Point each proxy at that file with `--audit-log`. Several proxies can share one 
 
 ## Notifications on macOS
 
-Each blocked call reaches Notification Center within about 3 seconds. Open it to see the alerts. macOS decides whether a banner also pops up, using the app's setting in System Settings > Notifications and any Focus mode. The app needs a bundle signature whose identifier matches its bundle id, so `tauri.conf.json` signs ad hoc. A public release needs a Developer ID signature.
+Each blocked call reaches Notification Center within about 3 seconds. Open it to see the alerts. macOS decides whether a banner also pops up, using the app's setting in System Settings > Notifications and any Focus mode. The app needs a bundle signature whose identifier matches its bundle id, so `tauri.conf.json` signs ad hoc. Downloaded releases carry that ad hoc signature too, so macOS blocks them until you clear the quarantine flag, as the release notes explain. A Developer ID signature would remove that step.
 
 ## What the audit log cannot show
 

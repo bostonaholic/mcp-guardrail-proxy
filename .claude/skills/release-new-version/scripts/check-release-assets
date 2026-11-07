@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Checks that a release holds exactly the files the workflow must attach, none of them empty.
+#
+# Usage: gh release view v<X.Y.Z> --json assets | check-release-assets <X.Y.Z>
+# Output: "ok <n> assets" on success. On failure, each missing or unexpected name on stderr.
+# Exit codes: 0 all present; 1 a file is missing, unexpected, or empty, or the input is not JSON.
+set -euo pipefail
+
+SKILL=".claude/skills/release-new-version/SKILL.md"
+version="${1:-}"
+[ -n "$version" ] || { echo "check-release-assets: pass the version (see $SKILL)" >&2; exit 1; }
+
+expected="$(
+  for name in macos-arm64.dmg macos-x86_64.dmg \
+    linux-x86_64.deb linux-x86_64.rpm linux-x86_64.AppImage \
+    linux-arm64.deb linux-arm64.rpm linux-arm64.AppImage; do
+    echo "mcp-guardrail-desktop-$version-$name"
+  done | LC_ALL=C sort
+)"
+
+json="$(cat)"
+actual="$(jq -er '.assets[] | select(.size > 0) | .name' <<<"$json" | LC_ALL=C sort)" || {
+  echo "check-release-assets: input holds no assets (see $SKILL)" >&2
+  exit 1
+}
+
+problems="$(LC_ALL=C comm -3 <(echo "$expected") <(echo "$actual"))"
+if [ -n "$problems" ]; then
+  LC_ALL=C comm -23 <(echo "$expected") <(echo "$actual") | sed 's/^/missing or empty: /' >&2
+  LC_ALL=C comm -13 <(echo "$expected") <(echo "$actual") | sed 's/^/unexpected: /' >&2
+  echo "check-release-assets: the release files are wrong (see $SKILL)" >&2
+  exit 1
+fi
+
+echo "ok $(wc -l <<<"$actual" | tr -d ' ') assets"

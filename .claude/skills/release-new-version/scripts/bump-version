@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Sets the release version everywhere it is stored and dates the changelog section.
+# Edits Cargo.toml, Cargo.lock, desktop/Cargo.toml, desktop/Cargo.lock,
+# desktop/tauri.conf.json, and CHANGELOG.md.
+#
+# Usage: bump-version <X.Y.Z> [YYYY-MM-DD]     (run from the repository root; date defaults to today)
+# Output: "bumped <old> -> <new>".
+# Exit codes: 0 done; 1 bad input, an empty Unreleased section, or a version that does not rise.
+set -euo pipefail
+
+SKILL=".claude/skills/release-new-version/SKILL.md"
+
+fail() {
+  echo "bump-version: $1 (see $SKILL)" >&2
+  exit 1
+}
+
+new="${1:-}"
+date="${2:-$(date +%F)}"
+[[ "$new" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "version must be X.Y.Z, got '$new'"
+[[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date must be YYYY-MM-DD, got '$date'"
+
+old="$(perl -ne 'if (/^version = "(.*)"$/) { print $1; exit }' Cargo.toml)"
+highest="$(printf '%s\n%s\n' "$old" "$new" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+[ "$new" != "$old" ] && [ "$highest" = "$new" ] || fail "$new is not above the current version $old"
+
+unreleased="$(awk '/^## /{ in_section = ($0 == "## Unreleased"); next } in_section && NF' CHANGELOG.md)"
+[ -n "$unreleased" ] || fail "CHANGELOG.md has nothing under ## Unreleased"
+
+NEW="$new" perl -0pi -e 's/^version = ".*?"$/version = "$ENV{NEW}"/m' Cargo.toml desktop/Cargo.toml
+NEW="$new" perl -0pi -e 's/"version": ".*?"/"version": "$ENV{NEW}"/' desktop/tauri.conf.json
+NEW="$new" DATE="$date" perl -0pi -e 's/^## Unreleased$/## Unreleased\n\n## $ENV{NEW} - $ENV{DATE}/m' CHANGELOG.md
+
+cargo update --workspace --offline --quiet
+cargo update --workspace --offline --quiet --manifest-path desktop/Cargo.toml
+
+echo "bumped $old -> $new"

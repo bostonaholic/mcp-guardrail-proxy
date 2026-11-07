@@ -4,6 +4,8 @@ Read [VISION.md](VISION.md) before a change that adds a rule, a taint source, a 
 
 [INSTALL.md](INSTALL.md) holds the install steps. [README.md](README.md) holds the architecture, the policy format, the audit format, and the verification tiers.
 
+To release a new version, use the `release-new-version` skill in `.claude/skills/release-new-version/SKILL.md`.
+
 ## Before a change is done
 
 Every command under "Development" in the README must exit 0. After a change under `src`, `specs`, `tests`, `scripts`, `policies`, or `fixtures`, or to `Cargo.toml` or `Cargo.lock`, run the `verify-taint-invariants` skill in `.claude/skills/verify-taint-invariants/SKILL.md`. It proves the checks still catch a deliberate break and tells you when to move the sync commit.

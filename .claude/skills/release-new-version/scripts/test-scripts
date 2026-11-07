@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Tests the release scripts against a throwaway repository. Touches nothing in this checkout and
+# needs no network. smoke-test-dmg and run-checks are left out: they need a real disk image and
+# the full build.
+#
+# Usage: test-scripts
+# Output: "ok <case>" per case, then "<n> passed".
+# Exit codes: 0 all passed; 1 a case failed.
+# shellcheck disable=SC2015,SC2016 # bad() exits, so A && ok || bad is safe; the $schema is literal.
+set -uo pipefail
+
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+passed=0
+
+ok() { echo "ok $1"; passed=$((passed + 1)); }
+bad() { echo "FAIL $1" >&2; exit 1; }
+expect_pass() { local name="$1"; shift; "$@" >/dev/null 2>&1 && ok "$name" || bad "$name"; }
+expect_fail() { local name="$1"; shift; "$@" >/dev/null 2>&1 && bad "$name" || ok "$name"; }
+
+# A minimal repository with the same version files as the real one, and a pushed origin.
+make_repo() {
+  git init --quiet --bare --initial-branch=main "$work/origin.git"
+  git init --quiet --initial-branch=main "$work/repo"
+  cd "$work/repo" || exit 1
+  git config user.name test
+  git config user.email test@example.com
+  git config commit.gpgsign false
+  git remote add origin "$work/origin.git"
+  mkdir -p src desktop/src
+  echo 'fn main() {}' | tee src/main.rs > desktop/src/main.rs
+  for dir in . desktop; do
+    printf '[package]\nname = "fixture-%s"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n' \
+      "${dir/./root}" > "$dir/Cargo.toml"
+    (cd "$dir" && cargo generate-lockfile --offline --quiet)
+  done
+  printf '/target\n' > .gitignore
+  printf '{\n  "$schema": "x",\n  "version": "0.1.0"\n}\n' > desktop/tauri.conf.json
+  printf '# Changelog\n\n## Unreleased\n\n### Fixed\n\n- A bug.\n\n## 0.1.0 - 2026-01-01\n\n- First.\n' > CHANGELOG.md
+  git add -A
+  git commit --quiet -m 'first'
+  git tag v0.1.0
+  echo x > later
+  git add later
+  git commit --quiet -m 'fix: later'
+  git push --quiet origin main --tags
+  git config commit.gpgsign true
+  git config user.signingkey test-key
+}
+
+make_repo
+
+# preflight
+output="$("$SCRIPTS/preflight" 2>&1)"
+[ "$(printf '%s\n' "$output" | sed -n 1p)" = "last_tag=v0.1.0" ] &&
+  [ "$(printf '%s\n' "$output" | sed -n 2p)" = "version=0.1.0" ] &&
+  printf '%s\n' "$output" | sed -n 3p | grep -q 'fix: later$' && ok "preflight prints tag, version, commits" ||
+  bad "preflight prints tag, version, commits: $output"
+
+echo dirty >> later
+expect_fail "preflight rejects a dirty tree" "$SCRIPTS/preflight"
+git checkout --quiet later
+
+git config commit.gpgsign false
+expect_fail "preflight rejects unsigned commits config" "$SCRIPTS/preflight"
+git config commit.gpgsign true
+
+git -c commit.gpgsign=false commit --quiet --allow-empty -m 'local only'
+expect_fail "preflight rejects a HEAD ahead of origin" "$SCRIPTS/preflight"
+git reset --quiet --hard origin/main
+
+perl -pi -e 's/0\.1\.0/0.1.9/' desktop/tauri.conf.json
+git -c commit.gpgsign=false commit --quiet -am 'drift'
+git push --quiet origin main
+expect_fail "preflight rejects versions that differ" "$SCRIPTS/preflight"
+git -c commit.gpgsign=false revert --quiet --no-edit HEAD
+git push --quiet origin main
+
+# bump-version
+expect_fail "bump-version rejects a bad version" "$SCRIPTS/bump-version" 1.2
+expect_fail "bump-version rejects a leading v" "$SCRIPTS/bump-version" v0.2.0
+expect_fail "bump-version rejects the same version" "$SCRIPTS/bump-version" 0.1.0
+expect_fail "bump-version rejects a lower version" "$SCRIPTS/bump-version" 0.0.9
+expect_fail "bump-version rejects a bad date" "$SCRIPTS/bump-version" 0.2.0 tomorrow
+
+cp CHANGELOG.md "$work/changelog"
+printf '# Changelog\n\n## Unreleased\n\n## 0.1.0 - 2026-01-01\n\n- First.\n' > CHANGELOG.md
+expect_fail "bump-version rejects an empty Unreleased" "$SCRIPTS/bump-version" 0.2.0
+cp "$work/changelog" CHANGELOG.md
+[ -z "$(git status --porcelain)" ] && ok "a rejected bump edits nothing" || bad "a rejected bump edits nothing"
+
+expect_pass "bump-version accepts 0.10.0 over 0.9-style order" "$SCRIPTS/bump-version" 0.10.0 2026-02-03
+grep -q '^version = "0.10.0"$' Cargo.toml && grep -q '^version = "0.10.0"$' desktop/Cargo.toml &&
+  grep -q '"version": "0.10.0"' desktop/tauri.conf.json && ok "bump-version sets all manifests" ||
+  bad "bump-version sets all manifests"
+grep -A1 'name = "fixture-root"' Cargo.lock | grep -q '0.10.0' &&
+  grep -A1 'name = "fixture-desktop"' desktop/Cargo.lock | grep -q '0.10.0' &&
+  ok "bump-version updates both lockfiles" || bad "bump-version updates both lockfiles"
+grep -q '^## 0.10.0 - 2026-02-03$' CHANGELOG.md && grep -q '^## Unreleased$' CHANGELOG.md &&
+  ok "bump-version dates the changelog" || bad "bump-version dates the changelog"
+
+# render-release-notes
+notes="$("$SCRIPTS/render-release-notes" 0.10.0)"
+grep -q 'A bug' <<<"$notes" && ! grep -q 'First' <<<"$notes" && ! grep -q '^## 0.10.0' <<<"$notes" &&
+  grep -q 'mcp-guardrail-desktop-0.10.0-macos-arm64.dmg' <<<"$notes" &&
+  ok "render-release-notes prints only that section" || bad "render-release-notes prints only that section: $notes"
+expect_fail "render-release-notes rejects an unknown version" "$SCRIPTS/render-release-notes" 9.9.9
+expect_fail "render-release-notes rejects a prefix of a version" "$SCRIPTS/render-release-notes" 0.10
+expect_fail "render-release-notes rejects no version" "$SCRIPTS/render-release-notes"
+
+# check-release-assets
+assets() {
+  local name
+  for name in macos-arm64.dmg macos-x86_64.dmg linux-x86_64.deb linux-x86_64.rpm linux-x86_64.AppImage \
+    linux-arm64.deb linux-arm64.rpm linux-arm64.AppImage; do
+    echo "mcp-guardrail-desktop-1.2.3-$name"
+  done | jq -R '{name: ., size: 10}' | jq -s '{assets: .}'
+}
+check() { "$SCRIPTS/check-release-assets" 1.2.3; }
+assets | check | grep -qx 'ok 8 assets' && ok "check-release-assets accepts the full set" ||
+  bad "check-release-assets accepts the full set"
+expect_fail "check-release-assets rejects a missing file" bash -c \
+  "jq 'del(.assets[0])' <<<'$(assets)' | '$SCRIPTS/check-release-assets' 1.2.3"
+expect_fail "check-release-assets rejects an empty file" bash -c \
+  "jq '.assets[0].size = 0' <<<'$(assets)' | '$SCRIPTS/check-release-assets' 1.2.3"
+expect_fail "check-release-assets rejects an extra file" bash -c \
+  "jq '.assets += [{name: \"extra\", size: 1}]' <<<'$(assets)' | '$SCRIPTS/check-release-assets' 1.2.3"
+expect_fail "check-release-assets rejects the wrong version" bash -c \
+  "'$SCRIPTS/check-release-assets' 1.2.4 <<<'$(assets)'"
+expect_fail "check-release-assets rejects no assets" bash -c \
+  "echo '{\"assets\":[]}' | '$SCRIPTS/check-release-assets' 1.2.3"
+expect_fail "check-release-assets rejects bad JSON" bash -c \
+  "echo nope | '$SCRIPTS/check-release-assets' 1.2.3"
+
+echo "$passed passed"

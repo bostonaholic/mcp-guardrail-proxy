@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Checks that the repository can start a release, then prints what the release would contain.
+#
+# Usage: preflight          (run from the repository root)
+# Output on success, in this order:
+#   last_tag=<tag>
+#   version=<X.Y.Z>
+#   commit <short-hash> <subject>     one line per commit since last_tag, oldest first
+# Exit codes: 0 ready; 1 a check failed (the reason is on stderr); 2 a required tool is missing.
+set -euo pipefail
+
+SKILL=".claude/skills/release-new-version/SKILL.md"
+
+fail() {
+  echo "preflight: $1 (see $SKILL)" >&2
+  exit 1
+}
+
+for tool in cargo gh git jq perl; do
+  command -v "$tool" >/dev/null || { echo "preflight: $tool is not installed (see $SKILL)" >&2; exit 2; }
+done
+
+[ -z "$(git status --porcelain)" ] || fail "the working tree has uncommitted changes"
+git fetch --quiet --tags origin main
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || fail "main does not match origin/main"
+gh auth status >/dev/null 2>&1 || fail "gh is not signed in"
+[ "$(git config --get commit.gpgsign)" = true ] || fail "commit.gpgsign is not true"
+[ -n "$(git config --get user.signingkey)" ] || fail "user.signingkey is not set"
+
+root_version="$(perl -ne 'if (/^version = "(.*)"$/) { print $1; exit }' Cargo.toml)"
+desktop_version="$(perl -ne 'if (/^version = "(.*)"$/) { print $1; exit }' desktop/Cargo.toml)"
+tauri_version="$(jq -r .version desktop/tauri.conf.json)"
+[ "$root_version" = "$desktop_version" ] && [ "$root_version" = "$tauri_version" ] ||
+  fail "versions differ: Cargo.toml $root_version, desktop/Cargo.toml $desktop_version, tauri.conf.json $tauri_version"
+
+last_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*')" || fail "no release tag found"
+[ "$last_tag" = "v$root_version" ] || fail "last tag $last_tag does not match version $root_version"
+
+commits="$(git log --reverse --format='commit %h %s' "$last_tag..HEAD")"
+[ -n "$commits" ] || fail "no commits since $last_tag"
+
+echo "last_tag=$last_tag"
+echo "version=$root_version"
+echo "$commits"
