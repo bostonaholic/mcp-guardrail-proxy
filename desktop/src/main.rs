@@ -346,15 +346,20 @@ impl UpdateWatch {
         }
     }
 
+    /// Menu item calls wait for the main thread, and the main thread takes the screen lock in
+    /// the tray handler and the commands. So the lock is released before the menu changes,
+    /// or the two threads can wait on each other forever.
     fn show(&self, screen: UpdateScreen) {
-        let mut shown = self.shared.lock().expect("the update screen lock");
-        if *shown == screen {
-            return;
+        let tray = screen.tray;
+        {
+            let mut shown = self.shared.lock().expect("the update screen lock");
+            if *shown == screen {
+                return;
+            }
+            *shown = screen;
         }
-        let _ = self.item.set_text(screen.tray.label);
-        let _ = self.item.set_enabled(screen.tray.enabled);
-        *shown = screen;
-        drop(shown);
+        let _ = self.item.set_text(tray.label);
+        let _ = self.item.set_enabled(tray.enabled);
         let _ = self.app.emit("updates-changed", ());
     }
 }
