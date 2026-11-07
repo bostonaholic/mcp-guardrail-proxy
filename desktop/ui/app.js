@@ -57,6 +57,9 @@ async function refresh() {
 
 function showSettings(view) {
   byId("path-input").value = view.audit_log_path;
+  byId("path-input").disabled = view.path_from_variable;
+  byId("path-save").disabled = view.path_from_variable;
+  byId("path-variable-note").hidden = !view.path_from_variable;
 }
 
 async function loadSettings() {

@@ -58,7 +58,10 @@ fn set_audit_log_path(
     state: tauri::State<'_, Mutex<SettingsState>>,
 ) -> Result<SettingsView, String> {
     let mut state = state.lock().expect("the settings lock");
-    state.store.set_audit_log_path(&path);
+    state
+        .store
+        .set_audit_log_path(&path)
+        .map_err(|error| error.to_string())?;
     state
         .sender
         .send(state.store.effective())

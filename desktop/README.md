@@ -26,6 +26,8 @@ Point each proxy at that file with `--audit-log`. Several proxies can share one 
 
 The Settings section in the window holds the audit log path. A saved path takes effect within one poll, with no relaunch. The dashboard then shows only the new file. Lines already in that file load as history and raise no notification.
 
+The path must be a full path that starts with `/`. The app does not expand `~`. A file that does not exist yet saves, because a proxy creates the log when it starts. A folder, a device, or a file the app cannot read shows an error, and the previous path stays. When `MCP_GUARDRAIL_AUDIT_LOG` is set, the window disables the path field.
+
 ## Notifications on macOS
 
 Each blocked call reaches Notification Center within about 3 seconds. Open it to see the alerts. macOS decides whether a banner also pops up, using the app's setting in System Settings > Notifications and any Focus mode. The app needs a bundle signature whose identifier matches its bundle id, so `tauri.conf.json` signs ad hoc. Downloaded releases carry that ad hoc signature too, so macOS blocks them until you clear the quarantine flag, as the release notes explain. A Developer ID signature would remove that step.

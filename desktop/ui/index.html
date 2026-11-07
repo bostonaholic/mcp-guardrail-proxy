@@ -15,8 +15,9 @@
       <form id="path-form">
         <label for="path-input">Audit log path</label>
         <input id="path-input" type="text" spellcheck="false" autocomplete="off" />
-        <button type="submit">Save</button>
+        <button id="path-save" type="submit">Save</button>
       </form>
+      <p id="path-variable-note" class="muted note" hidden>MCP_GUARDRAIL_AUDIT_LOG sets this path. Launch the app without it to change the path here.</p>
       <p id="save-error" class="banner" hidden></p>
     </details>
     <p id="source-error" class="banner" hidden></p>
