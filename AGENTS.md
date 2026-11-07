@@ -10,6 +10,8 @@ To release a new version, use the `release-new-version` skill in `.claude/skills
 
 Every command under "Development" in the README must exit 0. After a change under `src`, `specs`, `tests`, `scripts`, `policies`, or `fixtures`, or to `Cargo.toml` or `Cargo.lock`, run the `verify-taint-invariants` skill in `.claude/skills/verify-taint-invariants/SKILL.md`. It proves the checks still catch a deliberate break and tells you when to move the sync commit.
 
+A pull request with a manual or pre-merge step is not ready until an agent has run that step. Use the `verify-manual-steps` skill in `.claude/skills/verify-manual-steps/SKILL.md`. It drives the desktop app window in a sandbox and checks off each item only on observed evidence. Write a manual step into a PR only when that skill has no driver for it, and say why.
+
 ## Rules that are not in the code
 
 - No source or test file may open a network connection. The README's last development command greps for it.

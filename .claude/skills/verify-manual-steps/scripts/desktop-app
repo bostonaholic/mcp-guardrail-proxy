@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Builds, launches, drives, and inspects the desktop app inside a sandbox HOME, so a
+# manual-verification pass never reads or writes the user's real settings or audit log. The app is
+# driven by process id through the Accessibility API (ax-driver.swift), so a copy of the app the
+# user already runs is never touched. macOS only.
+#
+# Usage: desktop-app <command> [args]
+#   build                     Build a debug .app from ./desktop. Prints the bundle path.
+#   launch [--env-log PATH]   Start the app with HOME set to the sandbox and wait for the page.
+#                             --env-log also sets MCP_GUARDRAIL_AUDIT_LOG. Prints the pid.
+#   quit                      Stop the app this script launched, and wait for it to exit.
+#   ui ARGS...                Run ax-driver against the running app: wait-ready, window-id,
+#                             dump, get SELECTOR, set SELECTOR TEXT, press SELECTOR.
+#   shot OUT                  Save a PNG of the app window to OUT.
+#   paths                     Print the sandbox HOME, settings.json, default log, and stderr log.
+#   settings                  Print settings.json, or "missing".
+#   corrupt-settings          Write invalid JSON to settings.json.
+#   block PATH                Append one blocked (deny) audit line to PATH, stamped now.
+#   allow PATH                Append one forwarded (allow) audit line to PATH, stamped now.
+#   notified-since SECONDS    Print how many alerts from this app Notification Center recorded
+#                             at or after a Unix time (date +%s).
+#   reset                    Quit the app and delete the sandbox.
+#
+# The sandbox is $VERIFY_SANDBOX, else $TMPDIR/mcp-guardrail-verify. Run from the repository root.
+# Exit codes: 0 ok; 1 a check failed; 2 a required tool, file, or permission is missing.
+set -euo pipefail
+
+SKILL=".claude/skills/verify-manual-steps/SKILL.md"
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+BUNDLE_ID="com.bostonaholic.mcp-guardrail"
+APP="desktop/target/debug/bundle/macos/MCP Guardrail.app"
+SANDBOX="${VERIFY_SANDBOX:-${TMPDIR:-/tmp}/mcp-guardrail-verify}"
+SANDBOX_HOME="$SANDBOX/home"
+SETTINGS="$SANDBOX_HOME/Library/Application Support/$BUNDLE_ID/settings.json"
+DEFAULT_LOG="$SANDBOX_HOME/.local/state/mcp-guardrail/audit.jsonl"
+STDERR_LOG="$SANDBOX/app.stderr"
+PID_FILE="$SANDBOX/app.pid"
+DRIVER="$SANDBOX/bin/ax-driver"
+
+fail() { echo "desktop-app: $1 (see $SKILL)" >&2; exit 1; }
+missing() { echo "desktop-app: $1 (see $SKILL)" >&2; exit 2; }
+
+[ "$(uname -s)" = Darwin ] || missing "this harness drives the macOS app only"
+
+driver() {
+  if [ ! -x "$DRIVER" ] || [ "$SCRIPTS/ax-driver.swift" -nt "$DRIVER" ]; then
+    command -v swiftc >/dev/null || missing "swiftc is not installed (xcode-select --install)"
+    mkdir -p "$(dirname "$DRIVER")"
+    swiftc -O -o "$DRIVER" "$SCRIPTS/ax-driver.swift" >&2
+  fi
+  echo "$DRIVER"
+}
+
+running_pid() {
+  [ -f "$PID_FILE" ] || return 1
+  local pid
+  pid="$(cat "$PID_FILE")"
+  kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+
+require_pid() {
+  running_pid || fail "the app is not running; run 'desktop-app launch'"
+}
+
+start() {
+  local env_log="$1" bin
+  bin="$APP/Contents/MacOS/$(plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist")"
+  if [ -n "$env_log" ]; then
+    HOME="$SANDBOX_HOME" MCP_GUARDRAIL_AUDIT_LOG="$env_log" "$bin" >>"$STDERR_LOG" 2>&1 &
+  else
+    HOME="$SANDBOX_HOME" env -u MCP_GUARDRAIL_AUDIT_LOG "$bin" >>"$STDERR_LOG" 2>&1 &
+  fi
+  echo $! >"$PID_FILE"
+}
+
+stop() {
+  local pid
+  if pid="$(running_pid)"; then
+    kill "$pid"
+    for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    kill -0 "$pid" 2>/dev/null && fail "pid $pid did not exit"
+  fi
+  rm -f "$PID_FILE"
+}
+
+audit_line() {
+  local decision="$1" forwarded="$2" now
+  now="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+  printf '{"arguments":{},"decision":"%s","event":"mcp_guardrail_audit","forwarded":%s,"latency_us":100,"method":"tools/call","reason":"manual verification %s","rule_id":"verify-manual-steps","sequence":%s,"session_id":"verify-session","severity":"critical","taint_chain":[],"taint_level":"Clean","timestamp_ms":%s,"tool_name":"verify_%s"}\n' \
+    "$decision" "$forwarded" "$decision" "$now" "$now" "$decision"
+}
+
+command="${1:-}"
+shift || true
+case "$command" in
+  build)
+    command -v cargo-tauri >/dev/null || missing "tauri-cli is not installed (cargo install tauri-cli --version '^2' --locked)"
+    [ -f desktop/tauri.conf.json ] || missing "run from the repository root"
+    (cd desktop && cargo tauri build --debug --bundles app >&2)
+    [ -d "$APP" ] || fail "build finished but $APP is missing"
+    driver >/dev/null
+    echo "$APP"
+    ;;
+  launch)
+    env_log=""
+    if [ "${1:-}" = "--env-log" ]; then
+      [ -n "${2:-}" ] || fail "--env-log needs a path"
+      env_log="$2"
+    fi
+    [ -d "$APP" ] || missing "no app at $APP; run 'desktop-app build' from the repository root"
+    if pid="$(running_pid)"; then fail "the app is already running as pid $pid; run 'desktop-app quit' first"; fi
+    mkdir -p "$SANDBOX_HOME"
+    ax="$(driver)"
+    # The page sometimes never loads on a launch. One relaunch has cleared it every time seen.
+    for attempt in 1 2; do
+      start "$env_log"
+      pid="$(cat "$PID_FILE")"
+      if "$ax" "$pid" wait-ready 20 2>/dev/null; then echo "$pid"; exit 0; fi
+      kill -0 "$pid" 2>/dev/null || fail "the app exited at launch; read $STDERR_LOG"
+      echo "desktop-app: page did not load on attempt $attempt; relaunching" >&2
+      stop
+    done
+    fail "the page did not load after 2 launches; read $STDERR_LOG"
+    ;;
+  quit)
+    stop
+    echo "stopped"
+    ;;
+  ui)
+    pid="$(require_pid)"
+    "$(driver)" "$pid" "$@"
+    ;;
+  shot)
+    [ -n "${1:-}" ] || fail "usage: desktop-app shot OUT"
+    pid="$(require_pid)"
+    window="$("$(driver)" "$pid" window-id)"
+    screencapture -x -o -l "$window" "$1"
+    [ -s "$1" ] || fail "screencapture wrote nothing; the host may lack Screen Recording permission"
+    echo "$1"
+    ;;
+  paths)
+    printf 'home\t%s\nsettings\t%s\ndefault-log\t%s\nstderr\t%s\n' "$SANDBOX_HOME" "$SETTINGS" "$DEFAULT_LOG" "$STDERR_LOG"
+    ;;
+  settings)
+    if [ -f "$SETTINGS" ]; then cat "$SETTINGS"; echo; else echo "missing"; fi
+    ;;
+  corrupt-settings)
+    mkdir -p "$(dirname "$SETTINGS")"
+    printf '{"audit_log_path": ' >"$SETTINGS"
+    echo "$SETTINGS"
+    ;;
+  block | allow)
+    [ -n "${1:-}" ] || fail "usage: desktop-app $command PATH"
+    mkdir -p "$(dirname "$1")"
+    if [ "$command" = block ]; then audit_line deny false >>"$1"; else audit_line allow true >>"$1"; fi
+    echo "$1"
+    ;;
+  notified-since)
+    # Notification Center records each delivered alert. Read only this app's rows, read-only.
+    [[ "${1:-}" =~ ^[0-9]+$ ]] || fail "usage: desktop-app notified-since UNIX_SECONDS"
+    db="$HOME/Library/Group Containers/group.com.apple.usernoted/db2/db"
+    [ -r "$db" ] || missing "cannot read the Notification Center database at $db"
+    sqlite3 -readonly "$db" "select count(*) from record r join app a on a.app_id = r.app_id
+      where a.identifier = '$BUNDLE_ID' and r.delivered_date + 978307200 >= $1;"
+    ;;
+  reset)
+    stop
+    rm -rf "${SANDBOX:?}"
+    echo "removed $SANDBOX"
+    ;;
+  *)
+    sed -n '2,25p' "$0" >&2
+    exit 2
+    ;;
+esac

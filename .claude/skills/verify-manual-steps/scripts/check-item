@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Checks off one checkbox item in a PR body and adds an evidence line under it. An item that is
+# already checked keeps its box and gains the evidence line.
+#
+# Usage: check-item <pr-number> <text-in-the-item> <evidence>
+#   text-in-the-item  a substring that matches exactly one checkbox line
+#   evidence          one line: what you observed, on which commit
+# Output: the edited line.
+# Exit codes: 0 edited; 1 no line or more than one line matched; 2 gh or python3 is missing.
+set -euo pipefail
+
+SKILL=".claude/skills/verify-manual-steps/SKILL.md"
+pr="${1:-}"
+needle="${2:-}"
+evidence="${3:-}"
+[ -n "$pr" ] && [ -n "$needle" ] && [ -n "$evidence" ] ||
+  { echo "usage: check-item <pr-number> <text-in-the-item> <evidence> (see $SKILL)" >&2; exit 2; }
+for tool in gh python3; do
+  command -v "$tool" >/dev/null || { echo "check-item: $tool is not installed (see $SKILL)" >&2; exit 2; }
+done
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+gh pr view "$pr" --json body --jq .body >"$work/body"
+
+NEEDLE="$needle" EVIDENCE="$evidence" python3 -I - "$work/body" "$work/new" <<'PY'
+import os, re, sys
+
+source, target = sys.argv[1], sys.argv[2]
+needle, evidence = os.environ["NEEDLE"], os.environ["EVIDENCE"]
+lines = open(source, encoding="utf-8").read().split("\n")
+box = re.compile(r"^(\s*[-*] )\[[ xX]\]( .*)$")
+hits = [i for i, line in enumerate(lines) if box.match(line) and needle in line]
+if len(hits) != 1:
+    sys.exit(f"check-item: {len(hits)} checkbox lines contain the text; need exactly 1")
+i = hits[0]
+prefix, rest = box.match(lines[i]).groups()
+lines[i] = f"{prefix}[x]{rest}"
+indent = " " * len(prefix)
+lines.insert(i + 1, f"{indent}- Automated: {evidence}")
+open(target, "w", encoding="utf-8").write("\n".join(lines))
+print(lines[i][:160])
+PY
+
+gh pr edit "$pr" --body-file "$work/new" >/dev/null
