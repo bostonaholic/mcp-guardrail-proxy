@@ -98,9 +98,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The full history holds the previous release tag, whose public key installed apps trust.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -119,13 +121,30 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_KEY_LOST: ${{ vars.UPDATE_KEY_LOST }}
         run: |
           if [ -z "$UPDATE_SIGNING_KEY" ]; then
             echo "::error::the UPDATE_SIGNING_KEY secret is empty (see .claude/skills/release-new-version/SKILL.md)"
             exit 1
           fi
           (umask 077 && printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update.key")
-          jq -r .plugins.updater.pubkey desktop/tauri.conf.json | base64 -d > "$RUNNER_TEMP/update.pub"
+          # Installed apps check this release with the key of the release they run. A key
+          # rotation tag carries the new key but is signed with the old one, so check against
+          # the previous tag's key. The first tag with a key, and a release after a lost key,
+          # use their own key.
+          tagged_key="$(jq -r '.plugins.updater.pubkey // empty' desktop/tauri.conf.json)"
+          trusted_key=""
+          if [ "$UPDATE_KEY_LOST" = "true" ]; then
+            echo "::warning::UPDATE_KEY_LOST is true, so installed apps cannot install this release. Delete the variable after this release."
+          elif previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD^ 2>/dev/null)"; then
+            trusted_key="$(git show "$previous_tag:desktop/tauri.conf.json" | jq -r '.plugins.updater.pubkey // empty')"
+          fi
+          if [ -z "$trusted_key" ]; then
+            trusted_key="$tagged_key"
+          elif [ "$trusted_key" != "$tagged_key" ]; then
+            echo "::warning::this tag changes the update public key. Set UPDATE_SIGNING_KEY to the new key before the next tag."
+          fi
+          printf '%s' "$trusted_key" | base64 -d > "$RUNNER_TEMP/update.pub"
 
       - name: Make a throwaway signing key
         if: github.event_name == 'pull_request'
