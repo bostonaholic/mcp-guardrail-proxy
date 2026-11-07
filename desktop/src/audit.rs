@@ -162,7 +162,7 @@ pub fn tray_status(snapshot: &Snapshot) -> String {
 }
 
 /// A desktop notification.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Alert {
     pub title: String,
     pub body: String,

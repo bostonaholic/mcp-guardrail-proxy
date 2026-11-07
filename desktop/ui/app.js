@@ -88,7 +88,44 @@ byId("notifications").addEventListener("change", async (event) => {
   }
 });
 
+function renderUpdates(view) {
+  byId("update-version").textContent = view.current_version;
+  for (const button of document.querySelectorAll(".mode")) {
+    button.setAttribute("aria-pressed", String(button.dataset.mode === view.mode));
+  }
+  byId("update-status").textContent = view.status;
+  showBanner(byId("settings-note"), view.settings_note);
+  showBanner(byId("install-note"), view.install_note);
+  byId("check-now").disabled = view.busy;
+  byId("install").hidden = !view.can_install;
+  byId("install").disabled = !view.available || view.busy;
+  byId("restart").hidden = !view.restart_ready;
+  byId("open-release-page").hidden = view.can_install;
+}
+
+async function refreshUpdates() {
+  renderUpdates(await invoke("update_status"));
+}
+
+// A press on the mode already in effect also saves it, so the first-run note can clear.
+for (const button of document.querySelectorAll(".mode")) {
+  button.addEventListener("click", () => invoke("set_update_mode", { mode: button.dataset.mode }));
+}
+byId("check-now").addEventListener("click", () => invoke("check_for_updates"));
+byId("install").addEventListener("click", () => invoke("install_update"));
+byId("restart").addEventListener("click", () => invoke("restart_to_update"));
+byId("open-release-page").addEventListener("click", async () => {
+  showBanner(byId("open-error"), "");
+  try {
+    await invoke("open_release_page");
+  } catch (error) {
+    showBanner(byId("open-error"), `Cannot open the release page: ${error}`);
+  }
+});
+
 byId("blocked-only").addEventListener("change", render);
 listen("dashboard-updated", refresh);
+listen("updates-changed", refreshUpdates);
 refresh();
 loadSettings();
+refreshUpdates();

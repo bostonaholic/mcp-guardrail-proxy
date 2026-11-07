@@ -14,6 +14,7 @@ Every piece of code that remembers something between events and changes what it 
 | Line boundary | `LineBoundary`, `src/telemetry.rs` | `LineWriter` | A torn write never joins the next line, so an audit line stays whole on a shared stream. |
 | Log cursor | `TailCursor`, `desktop/src/tail.rs` | `AuditLogTail` | After a poll the cursor counts bytes of the current file, so no line is skipped. Read the assumption at the top of the spec. |
 | Poll gate | `Watch`, `desktop/src/watch.rs` | `DashboardWatch` | After a poll the screen is current, and history never raises a notification. |
+| Update check | `UpdateMachine`, `desktop/src/update.rs` | `UpdateCheck` | One request runs at a time, and Off makes no automatic request. Each version gets at most one notice and one automatic install. An install starts only when this copy can install and the person or Install mode asked for it. |
 
 `CallJudgment` refines the per-call phases of `McpGuardrailTaint` at the grain of the code. `McpGuardrailTaint` stays the abstract proof of the taint rule, so its state count and Rust mirror do not change.
 
@@ -43,6 +44,9 @@ Each spec has a `*Broken.tla` variant that must fail, which proves the check can
 - The bounds are small: `Cap = 2` for the line machines, `MaxLen = 3` and `MaxGen = 3` for the cursor. No bound applies to `SessionLifecycle`, `CallJudgment`, or `LineWriter`, whose state spaces are finite as written.
 - `SessionLifecycle` assumes a live host reads its output. A host that holds stdout open and stops reading stalls the writer, as it always has.
 - A broken variant shows that one invariant per spec can fail, not all of them.
+- The `UpdateCheck` walk checks `UpdateMachine` only. `desktop/src/updater.rs` and the updater plugin's own decisions, such as the version compare and the signature check, are outside it.
+- `UpdateCheck` models two versions, `V1` below `V2`.
+- The spec has no clock and offers only a mode other than the current one. Unit tests in `desktop/src/update.rs` cover the check schedule and a repeated choice of the current mode.
 
 ## Looked at and left out
 
