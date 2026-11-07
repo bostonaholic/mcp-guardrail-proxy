@@ -56,20 +56,27 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
    2. Give each server entry one status. Check the statuses in this order, and use the first that applies:
       - `already wrapped`: `command` equals `mcp-guardrail-proxy` or ends in `/mcp-guardrail-proxy`. Also, `args` starts with `proxy` and holds at least one token after its first `--`.
       - `remote`: the entry has a `type` that is not `stdio`. Or it has a `url`, `httpUrl`, or `serverUrl` key, even an empty one, and no `command`.
-      - `disabled`: the client does not start the entry. That means `enabled = false`, `"disabled": true`, or a local-scope entry whose project folder does not exist.
+      - `disabled`: the client does not start the entry. That means `enabled = false`, `"disabled": true`, a local-scope entry whose project folder does not exist, or a plugin that `claude plugin list --json` shows with `"enabled": false`.
       - `malformed`: the file does not parse, so every entry in it is `malformed`. Or the entry has neither `command` nor a remote key. Or `command` is not a string. Or `args` is present and is not a list of strings. Or an `env` key is empty or holds `=`. Or `command` passes the `already wrapped` test for `command` and `args` does not, with the note `runs the proxy binary in another form`.
       - `wrappable`: every other entry. An entry with no `args` key is `wrappable`.
+
+      A Claude Code plugin moves as one unit, so two statuses apply to all rows of an enabled plugin. Check them after the statuses above, in this order:
+      - `malformed`, with the note `plugin has a malformed server: <name>`, when one row of the plugin is `malformed`.
+      - `name taken`, when one of the plugin's server names is already in use. In use means a server in `~/.claude.json`, at user scope or in a project, or a server of another enabled user-scope plugin. This status replaces only `wrappable` and `remote`. The note names the other server and its scope.
    3. Work out the new upstream command of each `wrappable` entry, in this order:
       - A bare command, one with no `/`, becomes the output of `sh -c 'command -v -- "$1"' sh '<command>'` when that output starts with `/`. Else keep it, with the note `not found on PATH`. When `env` sets `PATH`, keep the bare command, with the note `uses the entry's PATH`. GUI clients often lack `npx`, `bun`, `uvx`, and `docker` on their `PATH`, so the absolute path matters.
       - A relative command, one with a `/` that does not start with `/`, becomes `<cwd>/<command>` when `cwd` starts with `/`. Keep `cwd` in the entry. Else keep the command, with the note `relative command`.
+      - In a plugin row, replace every `${CLAUDE_PLUGIN_ROOT}` in `command`, `args`, `env` values, and `cwd` with the plugin's `installPath`. Do this first. Add the note `${CLAUDE_PLUGIN_ROOT} resolved, re-wrap after a plugin update`.
       - Keep every other client variable, such as `${HOME}`, as written. The client expands it before it starts the proxy.
       - Docker with `-e NAME` and an `env` block works unchanged, because the proxy passes its environment to the upstream. Add the note `Docker with -e, the env passes through`.
    4. Add these notes where they apply:
+      - `moves the plugin's servers to user scope and disables the plugin`, on each row of an enabled plugin.
+      - `moved to user scope by the guardrail`, on a `disabled` plugin that has a key in the plugin move record of step 6.
       - `an arg names mcp-guardrail-proxy`, when an arg equals `mcp-guardrail-proxy` or ends in `/mcp-guardrail-proxy`. Such an entry can run the proxy through an outer command, such as `env`. Wrapping it again still works.
       - `probe not run: <reason>`, when step 7 cannot start the entry as its client does. The reasons are `client variable` (a `$` in `command`, `args`, an `env` value, or `cwd`), `cwd is not absolute`, `relative command` (the command is still relative), and `relative argument` (an arg starts with `./` or `../`, and no `cwd` starts with `/`). Step 6 still wires the row.
    5. Show the user one table with the columns `#`, `Client`, `Config file`, `Scope`, `Server`, `Status`, and `Note`. List every entry you found, with one status each.
-   6. Below the table, list each `wrappable` row. These rows are the default selection. For each, give the exact new entry or command from step 6, every file it changes, and each backup path.
-   7. End the message with one request: reply yes to apply the listed rows, or name the rows to leave out.
+   6. Below the table, list each `wrappable` row. These rows are the default selection. A plugin with a `wrappable` row is selected with all of its rows, and its `remote` rows move as they are. For each row, give the exact new entry or command from step 6, every file it changes, and each backup path.
+   7. End the message with one request: reply yes to apply the listed rows, or name the rows to leave out. The user approves or leaves out a plugin as one unit.
    8. Wait for the reply. This is the only time the install waits for the user.
 
    If no entry is `wrappable`, tell the user so and stop. A second full run of these steps stops here, because every wired entry is `already wrapped`.
@@ -117,9 +124,19 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
      `<<'JSON'` turns off shell expansion, so the entry needs only JSON escapes. If `add-json` fails, add the old entry back the same way, as step 5 read it, and report the row.
    - Claude Code, local scope. Run the same two commands with `--scope local`, in the project folder of the entry.
    - Codex. Edit `~/.codex/config.toml` in place. In `[mcp_servers.<name>]`, change only the values of `command` and `args`. If the table has no `args`, add it on the line after `command`. Do not touch any other key or subtable, such as `cwd`, `enabled`, or `[mcp_servers.<name>.env]`. Write each value as a TOML basic string, with `"` and `\` escaped. Then re-parse with `codex mcp get '<name>' --json > /dev/null`. If `codex` is not on `PATH`, re-parse with `python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' ~/.codex/config.toml`, which needs Python 3.11 or later. If the re-parse fails, or neither command can run, restore the file with `command cp -f ~/.codex/config.toml.bak-guardrail ~/.codex/config.toml` and report the row.
+   - Claude Code plugin. Never edit a plugin's own files, because a plugin update undoes the edit. Move the plugin's servers to user scope in its place, and record the move in `~/.local/state/mcp-guardrail/plugin-moves.json`. The record is one JSON object. Each key is `<plugin>@<marketplace>`, and its value lists the server names that the move added. This writer changes `~/.claude.json`, `~/.claude/settings.json`, and the record, so back up all three first. Skip the record backup when the record does not exist.
+     1. If the record does not exist, write it as `{}`. Add the plugin's key with the value `[]`. Re-parse the record with `python3 -m json.tool`. If that fails, restore the record with `command cp -f`, report the row, and run no `claude` command for it.
+     2. Run `claude plugin disable '<plugin>@<marketplace>' --scope user`.
+     3. For each server of the plugin, run `claude mcp add-json` at user scope, as for a user-scope row. Wrap a stdio server. Add a remote server as it is.
+     4. After each `add-json` passes, append the server name to the plugin's key, and re-parse the record.
+
+     Roll back a failed plugin row in this way:
+     - If `claude plugin disable` fails, run `claude plugin list --json`. If it still shows the plugin with `"enabled": true`, remove the plugin's key from the record. Else keep the key.
+     - If an `add-json` fails, run the Undo of this plugin: `claude plugin enable`, then `claude mcp remove` for each server in its key, then remove the key. If `claude plugin enable` fails, stop there, and keep the added servers and the key.
+     - If an append fails, run `claude mcp remove '<name>' --scope user` for the server just added. Then restore the record with `command cp -f '<record>.bak-guardrail' '<record>'`. If the remove passed, do the rollback of a failed `add-json`. If the remove failed, stop, and report that server as moved and not recorded, with its remove command.
    - JSON clients. Edit the entry in place and keep every other key. Then re-parse with `python3 -m json.tool '<file>' > /dev/null`. If it fails, restore the file with `command cp -f '<file>.bak-guardrail' '<file>'` and report the row.
 
-   Never write `~/.claude.json` yourself. Claude Code rewrites it while it runs, and only the `claude` CLI writes it safely. For the same reason, never copy its backup over it.
+   Never write `~/.claude.json` or `~/.claude/settings.json` yourself. Claude Code rewrites them while it runs, and only the `claude` CLI writes them safely. For the same reason, never copy their backups over them.
 
 7. Check each wired row, then tell the user what to restart. This step writes nothing, so it never rolls back a row.
 
@@ -138,7 +155,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
       1. If the cause is a timeout, and the upstream command is `npx`, `bun`, `uvx`, or `docker`, bare or as a full path, run the probe once more with `--timeout 240`. Such a server can download a package on its first start. If the second probe exits 0, the row passes.
       2. Run the entry's own `command` and `args`, quoted as in step 6, with `< /dev/null`. The proxy ends this run within about 6 s.
       3. Show the user every probe output and the output of that run.
-      4. In the final report, offer the undo of the row: an Undo request that names the row. Do not wait for a reply.
+      4. In the final report, offer the undo of the row: an Undo request that names the row. For a plugin row, offer the Undo of the whole plugin, and name its other servers, because that Undo removes them too. Do not wait for a reply.
       5. Go to the next row.
 
       A server that holds a lock file or a port can fail its probe while a client runs its own copy of it. Name this as one possible cause when the user has the client open.
@@ -165,6 +182,7 @@ Step 5 reads these files. "Tested" says where the facts in a row come from. A ro
 |---|---|---|---|---|---|---|
 | Claude Code, user scope | `~/.claude.json`, macOS and Linux | top-level `mcpServers` | `claude mcp remove`, then `claude mcp add-json`, with `--scope user` | the `claude` CLI checks the entry; `claude mcp get '<name>'` reports the connection | start a new session | yes, install transcript |
 | Claude Code, local scope | `~/.claude.json`, macOS and Linux | `projects.<project path>.mcpServers` | the same two commands with `--scope local`, run in the project folder | the same | start a new session in that folder | yes, install transcript |
+| Claude Code, plugin | the plugin's `installPath` from `claude plugin list --json`, for entries with `"scope": "user"`. The servers are in `<installPath>/.mcp.json`, at its top level or under `mcpServers`, or under `mcpServers` in `<installPath>/.claude-plugin/plugin.json`. | as in the file | the plugin writer in step 6 | `python3 -m json.tool` for the record | start a new session | yes, install transcript. These paths are Claude Code internals that can change. A server list in another shape makes its rows `malformed`. |
 | Codex | `~/.codex/config.toml`, macOS and Linux | `[mcp_servers.<name>]`, with `enabled = false` for a disabled server | the TOML recipe in step 6 | `codex mcp get '<name>' --json > /dev/null` | start a new session | yes, install transcript |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json`, macOS only | `mcpServers` | the JSON writer in step 6 | `python3 -m json.tool '<file>' > /dev/null` | quit and reopen | no, from the client's documentation |
 | Cursor | `~/.cursor/mcp.json`, macOS and Linux | `mcpServers` | the JSON writer | `python3 -m json.tool '<file>' > /dev/null` | quit and reopen | no, from the client's documentation |
@@ -178,9 +196,15 @@ To undo a row, use [Undo](#undo).
 
 Undo needs no backup. It rebuilds each original entry from its wrapped entry, so it works for a row wired in any pass, and it keeps edits made after the wiring. When the request names a client or a server, undo only those rows. A request that names the change needs no approval table.
 
-1. Run the step 5 scan. The rows to undo are the `already wrapped` rows.
+1. Run the step 5 scan. The rows to undo are the `already wrapped` rows. Read the plugin move record, `~/.local/state/mcp-guardrail/plugin-moves.json`. A user-scope server whose name is in a record key belongs to that plugin's move, not to a user-scope row.
 2. Rebuild each row. The new `command` is the first token after the first `--` in `args`. The new `args` is every token after that one, or `[]` when there is none. Keep every other key as it is now.
 3. Write each row:
    - Claude Code, user or local scope: read the entry from `~/.claude.json`, but never write that file. Run `claude mcp remove '<name>' --scope <scope>`. Then run `claude mcp add-json` with the rebuilt entry through the heredoc of step 6, with the same `--scope`. For local scope, run both commands in the project folder of the entry. If that folder no longer exists, report `project folder gone` with its path, and change nothing in the row. If `add-json` fails, add the wrapped entry back as you read it, and report the row.
    - Codex and the JSON clients: back up the file with `command cp -pf '<file>' '<file>.bak-guardrail'`. Set `command` and `args` of the row to the rebuilt values. Re-parse the file with the command in its client reference row. If the re-parse fails, run `command cp -f '<file>.bak-guardrail' '<file>'` and report the row.
-4. Report each row that now has a full path where the original had a bare or relative command. That path runs the same program. Then name the clients to restart, with the restart from the client reference.
+4. Undo each plugin move that the request covers, one record key at a time:
+   1. Run `claude plugin enable '<plugin>@<marketplace>' --scope user`. If it fails, stop for this plugin, keep its key, and report it.
+   2. Run `claude mcp remove '<name>' --scope user` for each name in the key. Report a name that is no longer there.
+   3. Back up the record, remove the key, and re-parse the record with `python3 -m json.tool`.
+
+   If the request covers Claude Code and the record does not exist, say so. Then rebuild each wrapped user-scope server as a user-scope row, and enable no plugin. Tell the user to run `claude plugin enable` for each plugin they want back.
+5. Report each row that now has a full path where the original had a bare or relative command. That path runs the same program. Then name the clients to restart, with the restart from the client reference.
