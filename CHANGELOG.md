@@ -4,6 +4,10 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 ## Unreleased
 
+### Added
+
+- Downloadable proxy binary for macOS and Linux on each GitHub release, so you can install the proxy without Rust.
+
 ## 0.2.0 - 2026-11-06
 
 ### Added

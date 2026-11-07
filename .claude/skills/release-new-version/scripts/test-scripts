@@ -104,6 +104,7 @@ grep -q '^## 0.10.0 - 2026-02-03$' CHANGELOG.md && grep -q '^## Unreleased$' CHA
 notes="$("$SCRIPTS/render-release-notes" 0.10.0)"
 grep -q 'A bug' <<<"$notes" && ! grep -q 'First' <<<"$notes" && ! grep -q '^## 0.10.0' <<<"$notes" &&
   grep -q 'mcp-guardrail-desktop-0.10.0-macos-arm64.dmg' <<<"$notes" &&
+  grep -q 'mcp-guardrail-proxy-0.10.0-linux-arm64.tar.gz' <<<"$notes" &&
   ok "render-release-notes prints only that section" || bad "render-release-notes prints only that section: $notes"
 expect_fail "render-release-notes rejects an unknown version" "$SCRIPTS/render-release-notes" 9.9.9
 expect_fail "render-release-notes rejects a prefix of a version" "$SCRIPTS/render-release-notes" 0.10
@@ -112,16 +113,23 @@ expect_fail "render-release-notes rejects no version" "$SCRIPTS/render-release-n
 # check-release-assets
 assets() {
   local name
-  for name in macos-arm64.dmg macos-x86_64.dmg linux-x86_64.deb linux-x86_64.rpm linux-x86_64.AppImage \
-    linux-arm64.deb linux-arm64.rpm linux-arm64.AppImage; do
-    echo "mcp-guardrail-desktop-1.2.3-$name"
-  done | jq -R '{name: ., size: 10}' | jq -s '{assets: .}'
+  {
+    for name in macos-arm64.dmg macos-x86_64.dmg linux-x86_64.deb linux-x86_64.rpm linux-x86_64.AppImage \
+      linux-arm64.deb linux-arm64.rpm linux-arm64.AppImage; do
+      echo "mcp-guardrail-desktop-1.2.3-$name"
+    done
+    for name in macos-arm64 macos-x86_64 linux-x86_64 linux-arm64; do
+      echo "mcp-guardrail-proxy-1.2.3-$name.tar.gz"
+    done
+  } | jq -R '{name: ., size: 10}' | jq -s '{assets: .}'
 }
 check() { "$SCRIPTS/check-release-assets" 1.2.3; }
-assets | check | grep -qx 'ok 8 assets' && ok "check-release-assets accepts the full set" ||
+assets | check | grep -qx 'ok 12 assets' && ok "check-release-assets accepts the full set" ||
   bad "check-release-assets accepts the full set"
 expect_fail "check-release-assets rejects a missing file" bash -c \
   "jq 'del(.assets[0])' <<<'$(assets)' | '$SCRIPTS/check-release-assets' 1.2.3"
+expect_fail "check-release-assets rejects a missing proxy archive" bash -c \
+  "jq 'del(.assets[] | select(.name | endswith(\"linux-arm64.tar.gz\")))' <<<'$(assets)' | '$SCRIPTS/check-release-assets' 1.2.3"
 expect_fail "check-release-assets rejects an empty file" bash -c \
   "jq '.assets[0].size = 0' <<<'$(assets)' | '$SCRIPTS/check-release-assets' 1.2.3"
 expect_fail "check-release-assets rejects an extra file" bash -c \
