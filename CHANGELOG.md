@@ -4,11 +4,16 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-06
+
 ### Added
 
 - Read-only desktop tray app that shows sessions and recent calls and notifies you when a call is blocked.
 - Downloadable desktop app for macOS and Linux on each GitHub release.
-- Windows shells in the default shell rules.
+
+### Changed
+
+- The default policy now covers tools named `powershell`, `pwsh`, and `cmd` in `deny-destructive-shell`, `deny-env-dump`, and `tainted-deny-shell-exec`. Those calls used to get the default allow, even in a tainted session. If you rely on one of these tools after a tainted read, use a custom policy with `--policy`.
 
 ### Fixed
 
