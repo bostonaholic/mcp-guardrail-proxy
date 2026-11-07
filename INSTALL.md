@@ -271,9 +271,14 @@ Undo uses these values. `<file>` is the full path of the row's config file. `<na
 
 Do these steps in order when the user asks for an upgrade.
 
-Upgrade uses these values. `<BIN>` is the full path that the step 3 block prints in item 1. `<file>` is the full path of the row's config file in steps 6.1 to 6.3, and of the policy file in a step 7 probe. `<SRC>` comes from step 4.1 in item 4. Item 5 runs the steps again from step 5, and step 6 sets `<AUDIT>`.
+Upgrade uses these values. `<BIN>` is the full path that the step 3 block prints in item 1.4. `<file>` is the full path of the row's config file in steps 6.1 to 6.3, and of the policy file in a step 7 probe. `<SRC>` comes from step 4.1 in item 4. Item 5 runs the steps again from step 5, and step 6 sets `<AUDIT>`.
 
-1. Upgrade the binary: run step 2 again. When the installed binary came from another commit, cargo prints `Replaced package` and replaces it. When it came from the same commit, cargo prints `is already installed, use --force to override`, exits 0, and keeps the binary. Both were observed in a sandbox on 2026-11-07. Then run the step 3 block, which tests the binary. `<BIN>` in the items that follow is the full path that this block printed.
+1. Upgrade the binary by the method that installed it:
+   1. Run the `BIN` line of step 3, then `printf '%s\n' "$BIN"`, in one shell.
+   2. If the printed path is the full path of `~/.local/bin/mcp-guardrail-proxy`, the binary is the prebuilt binary. Install the new release with the prebuilt binary block after step 7.
+   3. Else run step 2 again. When the installed binary came from another commit, cargo prints `Replaced package` and replaces it. When it came from the same commit, cargo prints `is already installed, use --force to override`, exits 0, and keeps the binary. Both were observed in a sandbox on 2026-11-07.
+   4. Run the step 3 block, which tests the binary. `<BIN>` in the items that follow is the full path that this block printed.
+   5. If both `$HOME/.local/bin/mcp-guardrail-proxy` and `${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin/mcp-guardrail-proxy` exist, report that `<BIN>` is the copy that the step 3 block picks, and that the other copy is shadowed. Remove neither copy.
 2. Run the step 5 scan. Probe each `already wrapped` row by the rules of step 7. A failed probe gets the step 7 actions.
 3. Re-wire each `already wrapped` row whose `command` is not `<BIN>`. Such a row runs another copy of the binary, for example after a switch between `cargo install` and the prebuilt binary.
    - Set only `command` to `<BIN>`. Keep `args`, `env`, `cwd`, and every other key.
