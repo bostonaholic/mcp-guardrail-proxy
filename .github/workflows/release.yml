@@ -154,7 +154,17 @@ jobs:
           if [ "$UPDATE_KEY_LOST" = "true" ]; then
             echo "::warning::UPDATE_KEY_LOST is true, so installed apps cannot install this release. Delete the variable after this release."
           elif [ -n "$LATEST_TAG" ]; then
-            trusted_key="$(git show "$LATEST_TAG:desktop/tauri.conf.json" | jq -r '.plugins.updater.pubkey // empty')"
+            if ! latest_commit="$(git rev-parse --verify --quiet "refs/tags/$LATEST_TAG^{commit}")"; then
+              echo "::error::the tag $LATEST_TAG of the latest published release is not in this clone"
+              exit 1
+            fi
+            # Early releases have no desktop/tauri.conf.json, so they have no key.
+            if git cat-file -e "$latest_commit:desktop/tauri.conf.json" 2>/dev/null; then
+              # Separate assignments, because the default shell has no pipefail and a pipe
+              # would hide a git show failure.
+              latest_config="$(git show "$latest_commit:desktop/tauri.conf.json")"
+              trusted_key="$(printf '%s' "$latest_config" | jq -r '.plugins.updater.pubkey // empty')"
+            fi
           fi
           if [ -z "$trusted_key" ]; then
             trusted_key="$tagged_key"

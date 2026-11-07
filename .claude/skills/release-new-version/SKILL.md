@@ -145,7 +145,7 @@ Expect `isDraft` false, `isPrerelease` false, and 15 assets. Give the user the r
 
 ## Set up the update signing key
 
-Do this once, before the first tag whose release the desktop updater reads. Installed apps trust the public key in the `desktop/tauri.conf.json` of the release they run. So the `sign` job checks each tag against the key in the tag of the latest published release, and fails the tag when the secret does not match that key. It skips a tag whose release failed, because that release is still a draft or was deleted. A tag uses its own key when no release is published, when the latest published release has no key, or when the repository variable `UPDATE_KEY_LOST` is `true`.
+Do this once, before the first tag whose release the desktop updater reads. Installed apps trust the public key in the `desktop/tauri.conf.json` of the release they run. So the `sign` job checks each tag against the key in the tag of the latest published release, and fails the tag when the secret does not match that key. It skips a tag whose release failed, because that release is still a draft or was deleted. A tag uses its own key when no release is published, when the latest published release has no key, or when the repository variable `UPDATE_KEY_LOST` is `true`. The `sign` job fails the tag when the tag of the latest published release is not in the repository.
 
 1. Make a key with no password: `minisign -G -W -p update.pub -s update.key`. The `sign` job runs with no person to type a password, so a password gives no extra protection.
 2. Put the public key in the app. Run `base64 < update.pub | tr -d '\n'`, and set `plugins.updater.pubkey` in `desktop/tauri.conf.json` to the output. Commit that change through a PR.
