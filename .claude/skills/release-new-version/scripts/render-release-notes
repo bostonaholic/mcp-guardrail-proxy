@@ -37,5 +37,16 @@ The macOS app has an ad hoc signature, not a Developer ID, so macOS blocks it th
 xattr -dr com.apple.quarantine "/Applications/MCP Guardrail.app"
 \`\`\`
 
-The app only reads the audit log. To install the proxy, follow [INSTALL.md](https://github.com/bostonaholic/mcp-guardrail-proxy/blob/v$version/INSTALL.md).
+The app only reads the audit log.
+
+## Download the proxy
+
+| System | File |
+| --- | --- |
+| macOS, Apple silicon | \`mcp-guardrail-proxy-$version-macos-arm64.tar.gz\` |
+| macOS, Intel | \`mcp-guardrail-proxy-$version-macos-x86_64.tar.gz\` |
+| Linux x86_64 | \`mcp-guardrail-proxy-$version-linux-x86_64.tar.gz\` |
+| Linux arm64 | \`mcp-guardrail-proxy-$version-linux-arm64.tar.gz\` |
+
+Each archive holds one binary, \`mcp-guardrail-proxy\`. To wire it into your MCP client, follow [INSTALL.md](https://github.com/bostonaholic/mcp-guardrail-proxy/blob/v$version/INSTALL.md).
 NOTES

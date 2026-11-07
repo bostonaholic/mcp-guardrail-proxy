@@ -1,21 +1,21 @@
 ---
 name: release-new-version
-description: Release a new version of mcp-guardrail-proxy and its desktop app. Covers the semver bump, CHANGELOG.md, the signed git tag, the GitHub release, and the downloadable desktop files for macOS and Linux. Use when asked to release, ship, cut, or publish a new version.
+description: Release a new version of mcp-guardrail-proxy and its desktop app. Covers the semver bump, CHANGELOG.md, the signed git tag, the GitHub release, and the downloadable proxy and desktop files for macOS and Linux. Use when asked to release, ship, cut, or publish a new version.
 ---
 
 # Release a new version
 
-A release ships the proxy source and the desktop app under one version. It holds:
+A release ships the proxy and the desktop app under one version. It holds:
 
 - One semver version in `Cargo.toml`, `desktop/Cargo.toml`, `desktop/tauri.conf.json`, and both lockfiles.
 - A dated section in `CHANGELOG.md`.
 - A signed tag `vX.Y.Z` on `main`.
-- A GitHub release with these 8 desktop files, built by `.github/workflows/release.yml`:
+- A GitHub release with these 12 files, built by `.github/workflows/release.yml`:
 
-| Platform | Files |
-| --- | --- |
-| macOS arm64, macOS x86_64 | `.dmg` |
-| Linux x86_64, Linux arm64 | `.deb`, `.rpm`, `.AppImage` |
+| Platform | Proxy | Desktop app |
+| --- | --- | --- |
+| macOS arm64, macOS x86_64 | `.tar.gz` | `.dmg` |
+| Linux x86_64, Linux arm64 | `.tar.gz` | `.deb`, `.rpm`, `.AppImage` |
 
 Run the scripts from the repository root. Do the steps in order. If a script exits non-zero, stop and go to "When a step fails". A pushed tag and a published release are public, so wait for the user at both approval points.
 
@@ -104,7 +104,7 @@ gh release download vX.Y.Z --pattern '*.dmg' --dir "$dir"
 .claude/skills/release-new-version/scripts/smoke-test-dmg "$dir/mcp-guardrail-desktop-X.Y.Z-macos-x86_64.dmg" X.Y.Z x86_64
 ```
 
-These checks do not launch the app, and nothing here tests the Linux files beyond their presence. Say so at the approval.
+These checks do not launch the app, and nothing here tests the Linux desktop files beyond their presence. The workflow runs `check-policy` on each proxy binary on its own platform before it packs the archive. Say so at the approval.
 
 ## 10. Approval: publish
 
@@ -117,7 +117,7 @@ gh release edit vX.Y.Z --draft=false --latest
 gh release view vX.Y.Z --json isDraft,isPrerelease,tagName,url,assets --jq '{isDraft, isPrerelease, tagName, url, assets: (.assets | length)}'
 ```
 
-Expect `isDraft` false, `isPrerelease` false, and 8 assets. Give the user the release URL.
+Expect `isDraft` false, `isPrerelease` false, and 12 assets. Give the user the release URL.
 
 ## When a step fails
 

@@ -1,5 +1,5 @@
-# Builds the desktop app for every supported platform and attaches the files to the
-# draft GitHub release for the pushed tag. The release-new-version skill creates that
+# Builds the proxy and the desktop app for every supported platform and attaches the files
+# to the draft GitHub release for the pushed tag. The release-new-version skill creates that
 # draft before it pushes the tag, then checks the files and publishes the release.
 #
 # A pull request that edits this file runs the builds and uploads nothing.
@@ -59,6 +59,11 @@ jobs:
           rustup default stable
           cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
 
+      - name: Build the proxy and check that it runs
+        run: |
+          cargo build --release --locked
+          target/release/mcp-guardrail-proxy check-policy
+
       - name: Build the bundles
         working-directory: desktop
         run: cargo tauri build --bundles "$BUNDLES" -- --locked
@@ -70,6 +75,7 @@ jobs:
           for file in desktop/target/release/bundle/{dmg,deb,rpm,appimage}/*.{dmg,deb,rpm,AppImage}; do
             cp "$file" "dist/mcp-guardrail-desktop-$VERSION-$PLATFORM.${file##*.}"
           done
+          tar -czf "dist/mcp-guardrail-proxy-$VERSION-$PLATFORM.tar.gz" -C target/release mcp-guardrail-proxy
           ls -l dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

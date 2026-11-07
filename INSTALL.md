@@ -63,3 +63,11 @@ To write audit lines to a file, create its directory, then add `"--audit-log"` a
 The binary embeds `policies/default-policy.toml`. To change the rules, copy that file, edit the copy, and pass it with `--policy`. Run `check-policy --policy <file>` on the edited copy before you wire it in.
 
 From a clone, run `cargo install --path . --locked` in place of step 2, and leave out `git clone` in step 4.
+
+Releases after 0.2.0 attach a prebuilt binary for macOS and Linux, so you can skip Rust and steps 1 and 2. Download `mcp-guardrail-proxy-<version>-<platform>.tar.gz` from the [releases page](https://github.com/bostonaholic/mcp-guardrail-proxy/releases), then run this block in the download folder. It puts the binary in `~/.local/bin`, which must be on your `PATH` for step 3. The `xattr` line is for macOS, which blocks a binary that a browser downloaded.
+
+```sh
+mkdir -p ~/.local/bin
+tar -xzf mcp-guardrail-proxy-*.tar.gz -C ~/.local/bin
+xattr -dr com.apple.quarantine ~/.local/bin/mcp-guardrail-proxy
+```
