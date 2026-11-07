@@ -2,16 +2,24 @@
 
 use std::fmt;
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The path and switch the poll thread uses. It is the channel message.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectiveSettings {
     pub audit_log_path: PathBuf,
     pub notifications: bool,
+}
+
+/// The contents of `settings.json`. A missing field takes its default, and the load ignores
+/// unknown fields, so an older app can still read a file that a newer one wrote.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct SavedSettings {
+    audit_log_path: Option<PathBuf>,
 }
 
 /// What the window shows.
@@ -31,6 +39,7 @@ pub enum SettingsError {
     NotAFile { path: String },
     CannotRead { path: String, error: String },
     PathFromVariable,
+    CannotSave { file: String, error: String },
 }
 
 impl fmt::Display for SettingsError {
@@ -47,36 +56,54 @@ impl fmt::Display for SettingsError {
             Self::PathFromVariable => f.write_str(
                 "MCP_GUARDRAIL_AUDIT_LOG sets the path for this launch. Launch the app without it to save a path.",
             ),
+            Self::CannotSave { file, error } => {
+                write!(f, "Cannot save settings to {file}: {error}.")
+            }
         }
     }
 }
 
 pub struct SettingsStore {
-    audit_log_path: PathBuf,
-    path_from_variable: bool,
+    file: PathBuf,
+    variable: Option<PathBuf>,
+    default_path: PathBuf,
+    saved: SavedSettings,
 }
 
 impl SettingsStore {
     /// `variable` is the `MCP_GUARDRAIL_AUDIT_LOG` value from launch. Any set value wins, even an
     /// empty one, so a person who sets it keeps the behavior the README documents.
-    pub fn load(_file: PathBuf, variable: Option<PathBuf>, default_path: PathBuf) -> Self {
+    /// A `file` that is missing or that the app cannot use gives the defaults.
+    pub fn load(file: PathBuf, variable: Option<PathBuf>, default_path: PathBuf) -> Self {
+        let saved = fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| serde_json::from_str::<SavedSettings>(&text).ok())
+            .filter(|saved| {
+                saved
+                    .audit_log_path
+                    .as_deref()
+                    .is_none_or(Path::is_absolute)
+            })
+            .unwrap_or_default();
         Self {
-            path_from_variable: variable.is_some(),
-            audit_log_path: variable.unwrap_or(default_path),
+            file,
+            variable,
+            default_path,
+            saved,
         }
     }
 
     pub fn effective(&self) -> EffectiveSettings {
         EffectiveSettings {
-            audit_log_path: self.audit_log_path.clone(),
+            audit_log_path: self.effective_path(),
             notifications: true,
         }
     }
 
     pub fn view(&self) -> SettingsView {
         SettingsView {
-            audit_log_path: self.audit_log_path.display().to_string(),
-            path_from_variable: self.path_from_variable,
+            audit_log_path: self.effective_path().display().to_string(),
+            path_from_variable: self.variable.is_some(),
             notifications: true,
             problem: None,
         }
@@ -85,12 +112,62 @@ impl SettingsStore {
     /// Refuses the save while the variable sets the path, so the rule holds even if the page
     /// does not disable the field.
     pub fn set_audit_log_path(&mut self, text: &str) -> Result<(), SettingsError> {
-        if self.path_from_variable {
+        if self.variable.is_some() {
             return Err(SettingsError::PathFromVariable);
         }
-        self.audit_log_path = checked_audit_log_path(text)?;
+        let path = checked_audit_log_path(text)?;
+        self.commit(SavedSettings {
+            audit_log_path: Some(path),
+        })
+    }
+
+    fn effective_path(&self) -> PathBuf {
+        effective_path(self.variable.as_deref(), &self.saved, &self.default_path)
+    }
+
+    /// Writes `next`, and only then takes it as the current settings, so a failed save changes
+    /// nothing.
+    fn commit(&mut self, next: SavedSettings) -> Result<(), SettingsError> {
+        let cannot_save = |error: String| SettingsError::CannotSave {
+            file: self.file.display().to_string(),
+            error,
+        };
+        let bytes =
+            serde_json::to_vec_pretty(&next).map_err(|error| cannot_save(error.to_string()))?;
+        write_atomically(&self.file, &bytes).map_err(|error| cannot_save(error.to_string()))?;
+        self.saved = next;
         Ok(())
     }
+}
+
+/// Any set variable wins, even an empty one, then the saved path, then the default.
+fn effective_path(variable: Option<&Path>, saved: &SavedSettings, default_path: &Path) -> PathBuf {
+    variable
+        .or(saved.audit_log_path.as_deref())
+        .unwrap_or(default_path)
+        .to_path_buf()
+}
+
+/// Replaces `file` by a rename, so a crash leaves the old or the new file whole, never a torn
+/// one. The rename also replaces a symlink at `file` and never writes through it. The pid in
+/// the temp name keeps two instances of the app off one temp file.
+fn write_atomically(file: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(folder) = file.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    let mut tmp = file.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let written = (|| -> io::Result<()> {
+        let mut out = File::create(&tmp)?;
+        out.write_all(bytes)?;
+        out.sync_all()?;
+        fs::rename(&tmp, file)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// The trimmed path, if the app can watch it. A file that does not exist yet passes, because a
@@ -277,6 +354,179 @@ mod tests {
         assert!(
             store.view().path_from_variable,
             "the window must say that the variable sets the path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_path_survives_a_reload_and_is_the_only_file_written() {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let default_path = dir.path().join("default.jsonl");
+        let log = dir.path().join("audit.jsonl");
+        std::fs::write(&log, "{}\n").expect("write a readable log");
+
+        let no_folder = dir.path().join("no-folder").join("config");
+
+        let older = dir.path().join("older").join("config");
+        std::fs::create_dir_all(&older).expect("create the config folder");
+        std::fs::write(
+            older.join("settings.json"),
+            r#"{"audit_log_path": "/older/audit.jsonl", "notifications": true}"#,
+        )
+        .expect("write an older settings file");
+
+        let symlinked = dir.path().join("symlinked").join("config");
+        std::fs::create_dir_all(&symlinked).expect("create the config folder");
+        let outside = dir.path().join("outside.txt");
+        std::fs::write(&outside, "bytes outside the config folder").expect("write the target");
+        std::os::unix::fs::symlink(&outside, symlinked.join("settings.json"))
+            .expect("link settings.json to a file outside the folder");
+
+        let rows = [
+            ("no config folder", no_folder),
+            ("an older settings.json", older),
+            ("a symlink at settings.json", symlinked),
+        ];
+        for (label, config) in rows {
+            let file = config.join("settings.json");
+            let mut store = SettingsStore::load(file.clone(), None, default_path.clone());
+            assert_eq!(
+                store
+                    .set_audit_log_path(log.to_str().expect("a UTF-8 temp path"))
+                    .map_err(|error| error.to_string()),
+                Ok(()),
+                "{label}: the save works"
+            );
+            let reloaded = SettingsStore::load(file.clone(), None, default_path.clone());
+            assert_eq!(
+                reloaded.effective().audit_log_path,
+                log,
+                "{label}: a reload watches the saved path"
+            );
+            let mut names: Vec<String> = std::fs::read_dir(&config)
+                .expect("read the config folder")
+                .map(|entry| {
+                    entry
+                        .expect("a config folder entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                ["settings.json"],
+                "{label}: the config folder holds only settings.json"
+            );
+            assert!(
+                std::fs::symlink_metadata(&file)
+                    .expect("settings.json exists")
+                    .file_type()
+                    .is_file(),
+                "{label}: settings.json is a regular file"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("read the symlink target"),
+            "bytes outside the config folder",
+            "the save never writes through the symlink"
+        );
+    }
+
+    #[test]
+    fn the_effective_path_is_the_variable_then_the_saved_path_then_the_default() {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let default_path = dir.path().join("default.jsonl");
+        let saved = dir.path().join("saved.json");
+        std::fs::write(&saved, r#"{"audit_log_path": "/saved/audit.jsonl"}"#)
+            .expect("write a saved settings file");
+        let absent = dir.path().join("absent.json");
+        let unknown_field = dir.path().join("unknown-field.json");
+        std::fs::write(
+            &unknown_field,
+            r#"{"audit_log_path": "/saved/audit.jsonl", "theme": "dark"}"#,
+        )
+        .expect("write a settings file from a newer app");
+        let rows = [
+            (
+                "the variable and a saved path",
+                saved.clone(),
+                Some(PathBuf::from("/variable/audit.jsonl")),
+                PathBuf::from("/variable/audit.jsonl"),
+                true,
+            ),
+            (
+                "a saved path only",
+                saved.clone(),
+                None,
+                PathBuf::from("/saved/audit.jsonl"),
+                false,
+            ),
+            ("no file", absent, None, default_path.clone(), false),
+            (
+                "an empty variable and a saved path",
+                saved.clone(),
+                Some(PathBuf::from("")),
+                PathBuf::from(""),
+                true,
+            ),
+            (
+                "a saved file with an unknown field",
+                unknown_field,
+                None,
+                PathBuf::from("/saved/audit.jsonl"),
+                false,
+            ),
+        ];
+        for (label, file, variable, expected_path, expected_from_variable) in rows {
+            let store = SettingsStore::load(file, variable, default_path.clone());
+            assert_eq!(
+                store.effective().audit_log_path,
+                expected_path,
+                "{label}: the effective path"
+            );
+            assert_eq!(
+                store.view().path_from_variable,
+                expected_from_variable,
+                "{label}: whether the variable sets the path"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_previous_settings() {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let blocker = dir.path().join("config");
+        std::fs::write(&blocker, "a regular file where the config folder goes")
+            .expect("write a regular file");
+        let file = blocker.join("settings.json");
+        let default_path = dir.path().join("default.jsonl");
+        let log = dir.path().join("audit.jsonl");
+        std::fs::write(&log, "{}\n").expect("write a readable log");
+        let os_error = std::fs::create_dir_all(&blocker)
+            .expect_err("a regular file blocks the config folder")
+            .to_string();
+        let mut store = SettingsStore::load(file.clone(), None, default_path.clone());
+        assert_eq!(
+            store
+                .set_audit_log_path(log.to_str().expect("a UTF-8 temp path"))
+                .map_err(|error| error.to_string()),
+            Err(format!(
+                "Cannot save settings to {}: {os_error}.",
+                file.display()
+            )),
+            "the window shows the save failure"
+        );
+        assert_eq!(
+            store.effective().audit_log_path,
+            default_path,
+            "the poll thread keeps the previous path"
+        );
+        assert_eq!(
+            store.view().audit_log_path,
+            default_path.display().to_string(),
+            "the window keeps the previous path"
         );
     }
 }

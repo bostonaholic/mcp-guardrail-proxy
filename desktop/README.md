@@ -2,7 +2,7 @@
 
 A read-only tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked.
 
-The app only reads the log. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
+The app reads the log and writes only its own settings file. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
 
 ## Run it
 
@@ -27,6 +27,13 @@ Point each proxy at that file with `--audit-log`. Several proxies can share one 
 The Settings section in the window holds the audit log path. A saved path takes effect within one poll, with no relaunch. The dashboard then shows only the new file. Lines already in that file load as history and raise no notification.
 
 The path must be a full path that starts with `/`. The app does not expand `~`. A file that does not exist yet saves, because a proxy creates the log when it starts. A folder, a device, or a file the app cannot read shows an error, and the previous path stays. When `MCP_GUARDRAIL_AUDIT_LOG` is set, the window disables the path field.
+
+The app saves its settings to `settings.json` and reads that file at launch:
+
+- macOS: `~/Library/Application Support/com.bostonaholic.mcp-guardrail/settings.json`
+- Linux: `$XDG_CONFIG_HOME/com.bostonaholic.mcp-guardrail/settings.json`, else `~/.config/com.bostonaholic.mcp-guardrail/settings.json`
+
+At launch, `MCP_GUARDRAIL_AUDIT_LOG` wins when it is set. Then comes the saved path, then the default path.
 
 ## Notifications on macOS
 

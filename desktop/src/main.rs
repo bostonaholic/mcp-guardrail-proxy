@@ -1,5 +1,6 @@
-//! Read-only tray app: watches the proxy's audit log and notifies on blocked calls.
-//! It never talks to a proxy, so it cannot weaken one, and the proxy runs the same without it.
+//! Tray app: watches the proxy's audit log and notifies on blocked calls. The only file it
+//! writes is its own settings file. It never talks to a proxy, so it cannot weaken one, and the
+//! proxy runs the same without it.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -31,7 +32,8 @@ const DEFAULT_AUDIT_LOG: &str = ".local/state/mcp-guardrail/audit.jsonl";
 const SETTINGS_FILE: &str = "settings.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const TRAY_ID: &str = "main";
-const WATCHER_STOPPED: &str = "The log watcher stopped. Relaunch the app.";
+const WATCHER_STOPPED: &str =
+    "Saved. The log watcher stopped. Relaunch the app to apply the change.";
 
 type SharedSnapshot = Arc<Mutex<Snapshot>>;
 
