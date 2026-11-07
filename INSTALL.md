@@ -189,7 +189,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
      - If the backup before an append, the append, or its re-parse fails, run `claude mcp remove '<name>' --scope user` for the server just added. Then, if that backup passed, restore the record from it with `command cp -f '<record>.bak-guardrail' '<record>'`. A failed backup leaves the record unchanged. If the remove passed, do the rollback of a failed `add-json`. If the remove failed, stop, and report that server as moved and not recorded, with its remove command.
    - JSON clients. Edit the entry in place and keep every other key. Then re-parse with `python3 -m json.tool '<file>' > /dev/null`. If it fails, restore the file with `command cp -f '<file>.bak-guardrail' '<file>'` and report the row.
 
-   Never write `~/.claude.json` or `~/.claude/settings.json` yourself. Claude Code rewrites them while it runs. Change them only with the `claude` commands of step 6. For the same reason, never copy their backups over them.
+   Never write `~/.claude.json` or `~/.claude/settings.json` yourself, and never copy their backups over them. Change them only with the `claude` commands of step 6. Claude Code rewrites `~/.claude.json` while it runs, and `claude plugin disable` edits `~/.claude/settings.json`.
 
 7. Check each wired row, then tell the user what to restart. This step writes nothing, so it never rolls back a row.
 
@@ -204,9 +204,9 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 
       Give each probe call a timeout of 10 minutes. A probe exits 0 when the server lists the same tools directly and through the proxy.
    2. If a probe call reaches the 10-minute timeout, report `probe did not end` for the row. Then go to the next row.
-   3. If a probe exits 1, find the cause in the stderr line that contains `mcp-guardrail-proxy: probe`. Search for the text, because server output can come first on the same line. Then do these actions in order:
+   3. If a probe exits 1, find the cause in the stderr line that contains `mcp-guardrail-proxy: probe` or `mcp-guardrail-proxy: policy error`. Search for the text, because server output can come first on the same line. Then do these actions in order:
       1. If the cause is a timeout, and the upstream command is `npx`, `bun`, `uvx`, or `docker`, bare or as a full path, run the probe once more with `--timeout 240`. If the second probe exits 0, the row passes.
-      2. Run the entry's own `command` and `args`, quoted as in step 6, with `< /dev/null`. The proxy ends this run within about 6 s.
+      2. Run the entry's own `command` and `args` in the form of the step 7.1 probe, with `< /dev/null`: `(cd -- '<cwd>' && env -- 'NAME=<value>' '<entry command>' '<entry arg>' < /dev/null)`. Add `cd` and `env` by the rules of step 7.1, and quote as in step 6. The proxy ends this run within about 6 s.
       3. Show the user every probe output and the output of that run.
       4. In the final report, offer the undo of the row: an Undo request that names the row. For a plugin row, offer the Undo of the whole plugin, and name its other servers, because that Undo removes them too. Do not wait for a reply.
       5. Go to the next row.
@@ -241,7 +241,7 @@ Step 5 reads these files. The Writer and Re-parse columns only name the step 6 w
 | Cursor | `~/.cursor/mcp.json`, macOS and Linux | `mcpServers` | the JSON writer | `python3 -m json.tool '<file>' > /dev/null` | quit and reopen | no, from the client's documentation |
 | VS Code | `~/Library/Application Support/Code/User/mcp.json` on macOS, `~/.config/Code/User/mcp.json` on Linux | `servers` | the JSON writer | `python3 -m json.tool '<file>' > /dev/null` | quit and reopen | no. The documentation puts `mcp.json` in the user profile but does not give the path. A file with comments does not parse, so its entries are `malformed`. |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json`, macOS and Linux | `mcpServers`, with `"disabled": true` for a disabled server | the JSON writer | `python3 -m json.tool '<file>' > /dev/null` | quit and reopen | no. The path comes from the VS Code documentation, not checked against Windsurf's own documentation. |
-| Gemini CLI | `~/.gemini/settings.json`, macOS and Linux | `mcpServers` | the JSON writer | `python3 -m json.tool '<file>' > /dev/null` | start a new session | no, from the client's documentation. `gemini mcp disable` records a disabled server in `~/.gemini/mcp-server-enablement.json`, which step 5 does not read. |
+| Gemini CLI | `~/.gemini/settings.json`, macOS and Linux | `mcpServers` | the JSON writer | `python3 -m json.tool '<file>' > /dev/null` | start a new session | no, from the client's documentation. The documentation puts server enablement in `~/.gemini/mcp-server-enablement.json`, which step 5 does not read. |
 
 To undo a row, use [Undo](#undo).
 

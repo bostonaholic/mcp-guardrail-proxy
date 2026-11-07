@@ -378,7 +378,7 @@ The probe does not prove these things:
 - It runs in your environment, not the client's. A `PATH` that the client lacks shows only after the client restarts.
 - It does not follow `tools/list` pagination, and it does not answer requests from the server. A server that pages its tools fails the probe.
 - It does not open `--audit-log`, and it writes no audit line.
-- A server that holds a lock file or a port can fail its probe while a client runs its own copy of it.
+- A server that holds a lock file or a port can fail its probe while a client runs its own copy of it. Nobody has tested this case.
 
 ## Desktop app
 
