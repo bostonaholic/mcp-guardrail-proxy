@@ -145,13 +145,15 @@ Expect `isDraft` false, `isPrerelease` false, and 15 assets. Give the user the r
 
 ## Set up the update signing key
 
-Do this once, before the first tag whose release the desktop updater reads. Installed apps trust the public key in the `desktop/tauri.conf.json` of the release they run. So the `sign` job checks each tag against the key in the previous tag, and fails the tag when the secret does not match that key. A tag uses its own key when the previous tag has no key, or when the repository variable `UPDATE_KEY_LOST` is `true`.
+Do this once, before the first tag whose release the desktop updater reads. Installed apps trust the public key in the `desktop/tauri.conf.json` of the release they run. So the `sign` job checks each tag against the key in the tag of the latest published release, and fails the tag when the secret does not match that key. It skips a tag whose release failed, because that release is still a draft or was deleted. A tag uses its own key when no release is published, when the latest published release has no key, or when the repository variable `UPDATE_KEY_LOST` is `true`.
 
 1. Make a key with no password: `minisign -G -W -p update.pub -s update.key`. The `sign` job runs with no person to type a password, so a password gives no extra protection.
 2. Put the public key in the app. Run `base64 < update.pub | tr -d '\n'`, and set `plugins.updater.pubkey` in `desktop/tauri.conf.json` to the output. Commit that change through a PR.
 3. Add the secret: `gh secret set UPDATE_SIGNING_KEY --repo bostonaholic/mcp-guardrail-proxy < update.key`.
 4. Keep a backup of `update.key` in a password manager, then delete the local `update.key`.
 
-To rotate the key by hand, do steps 1 and 2 with a new key, but do not change the secret yet. Ship one release. The `sign` job signs it with the old key, checks it against the old key in the previous tag, and warns that the key changed. After you publish that release, do steps 3 and 4 with the new key. The `sign` job then signs later releases with the new key.
+To rotate the key by hand, do steps 1 and 2 with a new key, but do not change the secret yet. Ship one release. The `sign` job signs it with the old key, checks it against the old key in the latest published release, and warns that the key changed. If that release fails, keep the old secret and ship the next patch. After you publish that release, do steps 3 and 4 with the new key. The `sign` job then signs later releases with the new key.
+
+The updater reads only the latest release. An app that has not installed the release that changed the key still trusts the old key, so it cannot install a later release. Tell those users to install the next release by hand.
 
 If you lose the key, apps cannot install a release signed with a new key. Each person then installs the next release by hand, and that release carries the new public key. To ship it, do steps 1 to 4 with a new key, then run `gh variable set UPDATE_KEY_LOST --body true --repo bostonaholic/mcp-guardrail-proxy`. The `sign` job then checks the release against its own key. After the release, run `gh variable delete UPDATE_KEY_LOST --repo bostonaholic/mcp-guardrail-proxy`.

@@ -98,7 +98,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      # The full history holds the previous release tag, whose public key installed apps trust.
+      # The full history holds the tag of the latest published release, whose public key
+      # installed apps trust.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -117,6 +118,22 @@ jobs:
       - name: Read the version
         run: echo "VERSION=$(jq -r .version desktop/tauri.conf.json)" >> "$GITHUB_ENV"
 
+      # Installed apps run a published release, so they trust the key of the latest one. A
+      # tag whose release failed has only a draft, or no release, so this skips it.
+      - name: Find the latest published release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>"$RUNNER_TEMP/latest.err")"; then
+            echo "LATEST_TAG=$latest_tag" >> "$GITHUB_ENV"
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/latest.err"; then
+            echo "No published release yet."
+          else
+            cat "$RUNNER_TEMP/latest.err" >&2
+            exit 1
+          fi
+
       - name: Write the release signing key
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -130,14 +147,14 @@ jobs:
           (umask 077 && printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update.key")
           # Installed apps check this release with the key of the release they run. A key
           # rotation tag carries the new key but is signed with the old one, so check against
-          # the previous tag's key. The first tag with a key, and a release after a lost key,
-          # use their own key.
+          # the key of the latest published release. A tag uses its own key when there is no
+          # published release, when that release has no key, and after a lost key.
           tagged_key="$(jq -r '.plugins.updater.pubkey // empty' desktop/tauri.conf.json)"
           trusted_key=""
           if [ "$UPDATE_KEY_LOST" = "true" ]; then
             echo "::warning::UPDATE_KEY_LOST is true, so installed apps cannot install this release. Delete the variable after this release."
-          elif previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD^ 2>/dev/null)"; then
-            trusted_key="$(git show "$previous_tag:desktop/tauri.conf.json" | jq -r '.plugins.updater.pubkey // empty')"
+          elif [ -n "$LATEST_TAG" ]; then
+            trusted_key="$(git show "$LATEST_TAG:desktop/tauri.conf.json" | jq -r '.plugins.updater.pubkey // empty')"
           fi
           if [ -z "$trusted_key" ]; then
             trusted_key="$tagged_key"
