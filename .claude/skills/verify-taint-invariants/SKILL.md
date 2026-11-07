@@ -2,7 +2,7 @@
 name: verify-taint-invariants
 description: Re-run the MCP guardrail taint invariant checks for the taint, policy, and proxy state machine in src/taint.rs, src/policy.rs, src/proxy.rs and its TLA+ spec specs/McpGuardrailTaint.tla. Run them after any change under src, specs, tests, scripts, policies, or fixtures, or to Cargo.toml or Cargo.lock. Prove that the checks catch a deliberate break before you move the sync commit.
 metadata:
-  sync-commit: cb618c654379f294a75d844de4f2c2fc28e963b3
+  sync-commit: be3aaa7b4dbe162cc5b3ee4aa1b87eae682386a3
   verified-files: src/taint.rs src/policy.rs src/proxy.rs src/machines specs
   verified-paths: src specs tests scripts policies fixtures desktop/src
 ---
@@ -22,7 +22,7 @@ The sync commit is the last commit on whose tree every command under "Run both v
 Run this command from the repository root:
 
 ```sh
-git diff --quiet cb618c654379f294a75d844de4f2c2fc28e963b3 -- src specs tests scripts policies fixtures desktop/src
+git diff --quiet be3aaa7b4dbe162cc5b3ee4aa1b87eae682386a3 -- src specs tests scripts policies fixtures desktop/src
 ```
 
 Replace the hash with the value of `metadata.sync-commit` if it has moved. Exit 0 means the verified paths match the sync commit. A non-zero exit means they changed, so run the commands under "Run both verification paths".
