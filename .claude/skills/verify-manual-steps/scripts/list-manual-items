@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Prints the PR body lines that ask for, or admit a gap in, manual verification: every checkbox
+# item, and every bullet under a "verify" or "test plan" heading that says a step was not run.
+#
+# Usage: list-manual-items <pr-number>
+# Output: one tab-separated line per item: <kind> <state> <section> <text>
+#   kind  checkbox | gap
+#   state open | done | -    (gap lines have no box)
+# Exit codes: 0 ok, even with no items; 2 gh is missing or the PR cannot be read.
+set -euo pipefail
+
+SKILL=".claude/skills/verify-manual-steps/SKILL.md"
+pr="${1:-}"
+[ -n "$pr" ] || { echo "usage: list-manual-items <pr-number> (see $SKILL)" >&2; exit 2; }
+command -v gh >/dev/null || { echo "list-manual-items: gh is not installed (see $SKILL)" >&2; exit 2; }
+
+body="$(gh pr view "$pr" --json body --jq .body)" ||
+  { echo "list-manual-items: cannot read PR $pr (see $SKILL)" >&2; exit 2; }
+
+printf '%s\n' "$body" | tr -d '\r' | awk '
+  /^#+ / { section = $0; sub(/^#+ +/, "", section); next }
+  /^[[:space:]]*[-*] \[[ xX]\] / {
+    state = ($0 ~ /\[ \]/) ? "open" : "done"
+    text = $0; sub(/^[[:space:]]*[-*] \[[ xX]\] +/, "", text)
+    printf "checkbox\t%s\t%s\t%s\n", state, section, text
+    next
+  }
+  tolower(section) ~ /verif|test plan|testing/ && /^[[:space:]]*[-*] / {
+    line = tolower($0)
+    if (line ~ /(not (built|run|tried|tested|reproduced|verified)|could not|cannot|nobody|no one|no reviewer|only (read|evidence)|mocked|by hand|manual)/) {
+      text = $0; sub(/^[[:space:]]*[-*] +/, "", text)
+      printf "gap\t-\t%s\t%s\n", section, text
+    }
+  }
+'
