@@ -8,8 +8,8 @@ Agents: do the steps in order. If a step fails, stop. Show the user the command 
 
 Two kinds of failure end only one row of the approved table, not the run:
 
-- In step 6, and in the writes of Undo, a failed row is rolled back and shown. Then the next row runs.
-- In step 7, a failed row is never rolled back. It gets the step 7 actions for a failed probe. Then the next row runs.
+- In step 6, and in the writes of Undo and Upgrade, a failed row is rolled back and shown. Then the next row runs.
+- In step 7, and in the probes of Upgrade, a failed row is never rolled back. It gets the step 7 actions for a failed probe. Then the next row runs.
 
 Every other failure stops the run.
 
@@ -253,6 +253,23 @@ Undo needs no backup. It rebuilds each original entry from its wrapped entry, so
 
    If the request covers Claude Code and the record does not exist, say so. Then rebuild each wrapped user-scope server as a user-scope row, and enable no plugin. Tell the user to run `claude plugin enable` for each plugin they want back.
 5. Report each row that now has a full path where the original had a bare or relative command. That path runs the same program. Then name the clients to restart, with the restart from the client reference.
+
+## Upgrade
+
+Do these steps in order when the user asks for an upgrade.
+
+1. Upgrade the binary: run step 2 again. When the installed binary came from another commit, cargo prints `Replaced package` and replaces it. When it came from the same commit, cargo prints `is already installed, use --force to override`, exits 0, and keeps the binary. Both were observed in a sandbox on 2026-11-07.
+2. Run the step 5 scan. Probe each `already wrapped` row by the rules of step 7. A failed probe gets the step 7 actions.
+3. If `<BIN>` changed, re-wire each `already wrapped` row whose `command` is not the new `<BIN>`. A switch between `cargo install` and the prebuilt binary changes `<BIN>`.
+   - Set only `command` to the new `<BIN>`. Keep `args`, `env`, `cwd`, and every other key.
+   - Write the row with its writer from the client reference, and back up the file first. A Claude Code row gets `claude mcp remove`, then `claude mcp add-json` with the entry as read and the new `command`.
+   - For a local-scope row whose project folder is gone, report `project folder gone`, and do not re-wire it.
+   - The server names do not change, so the plugin move record stays valid.
+4. On macOS, upgrade the app: run step 4 again from step 4.1. If step 4.1 picks the current clone, it does not pull it. Then say in the report that you did not pull that clone. Tell the user to pull it and ask for the upgrade again to get a newer app.
+5. After a plugin update, the moved servers still point at the old `installPath`. Run the Undo of that plugin, then run the steps again from step 5.
+6. After a runtime upgrade, such as a new Node version from a version manager, probe the rows again as in item 2. A full path that step 6 wrote can point at a removed version.
+
+Policy files from an earlier version still load, because the policy format does not change.
 
 ## Uninstall
 
