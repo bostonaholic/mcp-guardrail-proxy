@@ -26,7 +26,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use audit::{Snapshot, tray_status};
 use monitor::Monitor;
 use serde::{Deserialize, Serialize};
-use settings::{EffectiveSettings, SettingsStore, SettingsView, chosen_path_text};
+use settings::{EffectiveSettings, SettingsStore, SettingsView, chosen_folder_log_path};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -162,8 +162,9 @@ fn set_notifications(
     Ok(state.store.view())
 }
 
+/// The panel picks a folder, not a file, so a log that no proxy has created yet can be chosen.
 /// `async` and `spawn_blocking` keep the panel's wait off two threads. A sync command runs on
-/// the main thread, where `blocking_pick_file` would wait on itself. A wait in the async task
+/// the main thread, where `blocking_pick_folder` would wait on itself. A wait in the async task
 /// would hold one of the runtime's workers until the person closes the panel. The settings lock
 /// is held only to read the start folder, so no other command waits on the panel.
 #[tauri::command]
@@ -181,19 +182,19 @@ async fn choose_audit_log_path(
             .dialog()
             .file()
             .set_parent(&window)
-            .set_title("Choose the audit log");
+            .set_title("Choose the audit log folder");
         if let Some(folder) = folder {
             panel = panel.set_directory(folder);
         }
-        panel.blocking_pick_file()
+        panel.blocking_pick_folder()
     })
     .await
     .map_err(|error| format!("Cannot open the file chooser: {error}"))?;
-    let Some(file) = chosen else {
+    let Some(folder) = chosen else {
         return Ok(None);
     };
-    let path = file.into_path().map_err(|error| error.to_string())?;
-    chosen_path_text(path)
+    let folder = folder.into_path().map_err(|error| error.to_string())?;
+    chosen_folder_log_path(folder)
         .map(Some)
         .map_err(|error| error.to_string())
 }

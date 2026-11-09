@@ -72,7 +72,7 @@ impl fmt::Display for SettingsError {
             }
             Self::NotUtf8 { path } => write!(
                 f,
-                "{path} is not valid UTF-8, so the app cannot save it. Rename the file or choose another one."
+                "{path} is not valid UTF-8, so the app cannot save it. Rename the folder or choose another one."
             ),
         }
     }
@@ -262,11 +262,17 @@ fn checked_audit_log_path(text: &str) -> Result<PathBuf, SettingsError> {
     Ok(path.to_path_buf())
 }
 
-/// The chosen path as its exact text. A lossy conversion is refused: it would name a file that
-/// does not exist, and the save accepts that as a log not yet created, so the app would watch
-/// the wrong file with no error.
-pub fn chosen_path_text(path: PathBuf) -> Result<String, SettingsError> {
-    path.into_os_string()
+/// The file name the app watches in a chosen folder, the name the README's quick start gives
+/// `--audit-log`. A proxy that writes another name needs its path typed.
+pub const AUDIT_LOG_FILE_NAME: &str = "audit.jsonl";
+
+/// The audit log in the chosen folder, as its exact text. A lossy conversion is refused: it
+/// would name a file that does not exist, and the save accepts that as a log not yet created,
+/// so the app would watch the wrong file with no error.
+pub fn chosen_folder_log_path(folder: PathBuf) -> Result<String, SettingsError> {
+    folder
+        .join(AUDIT_LOG_FILE_NAME)
+        .into_os_string()
         .into_string()
         .map_err(|raw| SettingsError::NotUtf8 {
             path: Path::new(&raw).display().to_string(),
@@ -755,27 +761,26 @@ mod tests {
         );
     }
 
-    // Slice 1: Choose… picks an existing file and saves it as the audit log path.
     #[test]
-    fn a_chosen_path_keeps_its_text_unless_it_is_not_utf8() {
+    fn a_chosen_folder_gives_the_audit_log_in_it_unless_it_is_not_utf8() {
         #[cfg(unix)]
         use std::os::unix::ffi::OsStringExt;
         let mut rows = vec![(
-            "a path with a space and non-ASCII letters",
-            PathBuf::from("/tmp/audit logs/journal-\u{e9}.jsonl"),
-            Ok("/tmp/audit logs/journal-\u{e9}.jsonl".to_string()),
+            "a folder with a space and non-ASCII letters",
+            PathBuf::from("/tmp/audit logs/journ\u{e9}e"),
+            Ok("/tmp/audit logs/journ\u{e9}e/audit.jsonl".to_string()),
         )];
         #[cfg(unix)]
         rows.push((
-            "a path that is not valid UTF-8",
-            PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/\xff.jsonl".to_vec())),
-            Err("/tmp/\u{FFFD}.jsonl is not valid UTF-8, so the app cannot save it. Rename the file or choose another one.".to_string()),
+            "a folder that is not valid UTF-8",
+            PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/\xff".to_vec())),
+            Err("/tmp/\u{FFFD}/audit.jsonl is not valid UTF-8, so the app cannot save it. Rename the folder or choose another one.".to_string()),
         ));
-        for (label, path, expected) in rows {
+        for (label, folder, expected) in rows {
             assert_eq!(
-                chosen_path_text(path).map_err(|error| error.to_string()),
+                chosen_folder_log_path(folder).map_err(|error| error.to_string()),
                 expected,
-                "{label}: the text the page gets"
+                "{label}: the path the page gets"
             );
         }
     }
