@@ -50,6 +50,7 @@ pub enum SettingsError {
     CannotRead { path: String, error: String },
     PathFromVariable,
     CannotSave { file: String, error: String },
+    NotUtf8 { path: String },
 }
 
 impl fmt::Display for SettingsError {
@@ -69,6 +70,10 @@ impl fmt::Display for SettingsError {
             Self::CannotSave { file, error } => {
                 write!(f, "Cannot save settings to {file}: {error}.")
             }
+            Self::NotUtf8 { path } => write!(
+                f,
+                "{path} is not valid UTF-8, so the app cannot save it. Rename the file or choose another one."
+            ),
         }
     }
 }
@@ -245,6 +250,17 @@ fn checked_audit_log_path(text: &str) -> Result<PathBuf, SettingsError> {
     }
     File::open(path).map_err(cannot_read)?;
     Ok(path.to_path_buf())
+}
+
+/// The chosen path as its exact text. A lossy conversion is refused: it would name a file that
+/// does not exist, and the save accepts that as a log not yet created, so the app would watch
+/// the wrong file with no error.
+pub fn chosen_path_text(path: PathBuf) -> Result<String, SettingsError> {
+    path.into_os_string()
+        .into_string()
+        .map_err(|raw| SettingsError::NotUtf8 {
+            path: Path::new(&raw).display().to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -727,5 +743,30 @@ mod tests {
             None,
             "the replaced file loads with no banner"
         );
+    }
+
+    // Slice 1: Choose… picks an existing file and saves it as the audit log path.
+    #[test]
+    fn a_chosen_path_keeps_its_text_unless_it_is_not_utf8() {
+        #[cfg(unix)]
+        use std::os::unix::ffi::OsStringExt;
+        let mut rows = vec![(
+            "a path with a space and non-ASCII letters",
+            PathBuf::from("/tmp/audit logs/journal-\u{e9}.jsonl"),
+            Ok("/tmp/audit logs/journal-\u{e9}.jsonl".to_string()),
+        )];
+        #[cfg(unix)]
+        rows.push((
+            "a path that is not valid UTF-8",
+            PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/\xff.jsonl".to_vec())),
+            Err("/tmp/\u{FFFD}.jsonl is not valid UTF-8, so the app cannot save it. Rename the file or choose another one.".to_string()),
+        ));
+        for (label, path, expected) in rows {
+            assert_eq!(
+                chosen_path_text(path).map_err(|error| error.to_string()),
+                expected,
+                "{label}: the text the page gets"
+            );
+        }
     }
 }

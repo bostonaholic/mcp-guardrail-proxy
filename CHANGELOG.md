@@ -8,6 +8,7 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 - Downloadable proxy binary for macOS and Linux on each GitHub release, so you can install the proxy without Rust.
 - A General tab in the desktop app's Settings window, where you change the watched audit log without a relaunch and turn blocked-call notifications off and on. The app keeps your settings across relaunches.
+- A Choose… button on the General tab of the desktop app's Settings window. It opens the system file panel and saves the file you pick as the audit log path.
 - `mcp-guardrail-proxy probe`, which lists an MCP server's tools directly and through the proxy, fails when the lists differ, and gives the policy outcome of each tool in a clean and a tainted session.
 - The desktop app checks for updates when you click "Check for Updates…" in the tray or Check now in its Settings window.
 - An update mode on the Updates tab of the desktop app's Settings window: Off, Notify, or Install. The default is Notify. In Notify and Install, the app checks github.com about one minute after launch and once a day after that. Off makes no check until you start one.
