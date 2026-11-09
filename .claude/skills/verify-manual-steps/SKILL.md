@@ -49,8 +49,8 @@ Every launch sets `HOME` to the sandbox, so the user's real `settings.json` and 
 
 `D ui` takes these selectors:
 
-- `#id` selects the element with that HTML id. Read `desktop/ui/index.html` for the ids.
-- `AXRole:Title` selects an element that has no id, such as `AXDisclosureTriangle:Settings`.
+- `#id` selects the element with that HTML id, in either window. Read `desktop/ui/index.html` (the dashboard) and `desktop/ui/settings.html` (the Settings window) for the ids.
+- `AXRole:Title` selects an element that has no id, such as the update mode button `AXCheckBox:Notify`.
 
 | Command | Does |
 | --- | --- |
@@ -61,7 +61,7 @@ Every launch sets `HOME` to the sandbox, so the user's real `settings.json` and 
 
 An element hidden with the HTML `hidden` attribute reports `"found": false`. So a banner that is not shown reads as `found: false`, and a banner that is shown reads as `found: true` with its message in `text`.
 
-The Settings `<details>` element starts closed at every launch. Run `D ui press "AXDisclosureTriangle:Settings"` before you read its fields.
+The Settings window does not exist at launch. Run `D ui press "#open-settings"` to open it on the General tab, then `D ui press "#tab-updates"` for the Updates tab. The first `D ui get` after the window opens can print `"found": false`, so run it again before you count it as a fail. Closing the window only hides it. While the Settings window is open, `D shot` saves it, because it is the front window of the app.
 
 The driver uses the Accessibility API and events sent to the app's pid. It does not move the mouse, take the keyboard, or bring the window to the front. The window does still appear on the user's screen. The host process needs Accessibility permission, and `D shot` also needs Screen Recording permission. If either is missing, the command exits 2 and names the setting, so tell the user.
 

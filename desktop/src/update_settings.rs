@@ -1,6 +1,6 @@
 //! The update settings in `settings.json` inside the folder the caller passes: the chosen mode
 //! and the two saved version bounds. The app passes its own `updates` folder, so this file never
-//! shares a path with the Settings section's `settings.json`.
+//! shares a path with the General tab's `settings.json`.
 
 use std::fs::{self, File};
 use std::io::{self, Write};

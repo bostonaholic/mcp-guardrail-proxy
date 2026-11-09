@@ -25,10 +25,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use audit::{Snapshot, tray_status};
 use monitor::Monitor;
+use serde::{Deserialize, Serialize};
 use settings::{EffectiveSettings, SettingsStore, SettingsView};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use update::{
     RELEASE_PAGE_URL, Remembered, SaveRequest, TrayClick, TrayItem, UpdateEvent, UpdateMachine,
     UpdateMode, UpdateView,
@@ -42,10 +43,20 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const TRAY_ID: &str = "main";
 const WATCHER_STOPPED: &str =
     "Saved. The log watcher stopped. Relaunch the app to apply the change.";
-/// The update settings sit in their own folder, so an update save never replaces the Settings
-/// section's `settings.json`, and a Settings save never replaces the update file.
+/// The update settings sit in their own folder, so an update save never replaces the General
+/// tab's `settings.json`, and a General tab save never replaces the update file.
 const UPDATE_SETTINGS_DIR: &str = "updates";
 const UPDATES_ITEM_ID: &str = "updates";
+const SETTINGS_ITEM_ID: &str = "settings";
+const SETTINGS_WINDOW: &str = "settings";
+const SETTINGS_PAGE: &str = "settings.html";
+const SETTINGS_TITLE: &str = "Settings";
+const SETTINGS_WIDTH: f64 = 640.0;
+const SETTINGS_HEIGHT: f64 = 440.0;
+/// Tells an open Settings window which tab to show. A new window reads its tab from the URL.
+const SETTINGS_TAB_EVENT: &str = "settings-tab";
+/// Lets the dashboard drop its settings banner after a save in the Settings window.
+const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
 const TICK_INTERVAL: Duration = Duration::from_secs(60);
 
 #[cfg(target_os = "macos")]
@@ -54,6 +65,25 @@ const OPEN_URL_PROGRAM: &str = "open";
 const OPEN_URL_PROGRAM: &str = "xdg-open";
 
 type SharedSnapshot = Arc<Mutex<Snapshot>>;
+
+/// A tab of the Settings window. The page names a tab when it calls `open_settings`, and the
+/// command refuses any other name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum SettingsTab {
+    General,
+    Updates,
+}
+
+impl SettingsTab {
+    /// The name the page uses: the URL fragment of a new window, and the tab event's payload.
+    fn name(self) -> &'static str {
+        match self {
+            SettingsTab::General => "general",
+            SettingsTab::Updates => "updates",
+        }
+    }
+}
 
 /// One lock covers the store and the poll thread's channel, so the thread gets settings in the
 /// order the window sets them.
@@ -95,6 +125,7 @@ fn settings(state: tauri::State<'_, Mutex<SettingsState>>) -> SettingsView {
 
 #[tauri::command]
 fn set_audit_log_path(
+    app: AppHandle,
     path: String,
     state: tauri::State<'_, Mutex<SettingsState>>,
 ) -> Result<SettingsView, String> {
@@ -103,6 +134,7 @@ fn set_audit_log_path(
         .store
         .set_audit_log_path(&path)
         .map_err(|error| error.to_string())?;
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, ());
     state
         .sender
         .send(state.store.effective())
@@ -112,6 +144,7 @@ fn set_audit_log_path(
 
 #[tauri::command]
 fn set_notifications(
+    app: AppHandle,
     on: bool,
     state: tauri::State<'_, Mutex<SettingsState>>,
 ) -> Result<SettingsView, String> {
@@ -120,6 +153,7 @@ fn set_notifications(
         .store
         .set_notifications(on)
         .map_err(|error| error.to_string())?;
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, ());
     state
         .sender
         .send(state.store.effective())
@@ -168,10 +202,44 @@ fn open_release_page() -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Async, because Tauri warns that a window built inside a synchronous command can deadlock.
+#[tauri::command]
+async fn open_settings(app: AppHandle, tab: SettingsTab) -> Result<(), String> {
+    show_settings(&app, tab).map_err(|error| error.to_string())
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
+    }
+}
+
+/// Builds the Settings window on first use. Closing it only hides it, so later calls reuse it.
+fn show_settings(app: &AppHandle, tab: SettingsTab) -> tauri::Result<()> {
+    let window = match app.get_webview_window(SETTINGS_WINDOW) {
+        Some(window) => {
+            app.emit_to(SETTINGS_WINDOW, SETTINGS_TAB_EVENT, tab)?;
+            window
+        }
+        None => {
+            let page = format!("{SETTINGS_PAGE}#{}", tab.name());
+            WebviewWindowBuilder::new(app, SETTINGS_WINDOW, WebviewUrl::App(page.into()))
+                .title(SETTINGS_TITLE)
+                .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
+                .resizable(false)
+                .maximizable(false)
+                .center()
+                .build()?
+        }
+    };
+    window.show()?;
+    window.set_focus()
+}
+
+fn show_settings_from_tray(app: &AppHandle, tab: SettingsTab) {
+    if let Err(error) = show_settings(app, tab) {
+        eprintln!("mcp-guardrail-desktop: the Settings window could not open: {error}");
     }
 }
 
@@ -190,9 +258,13 @@ fn build_tray(app: &AppHandle, status: &str, updates: TrayItem) -> tauri::Result
         updates.enabled,
         None::<&str>,
     )?;
+    let settings_item = MenuItem::with_id(app, SETTINGS_ITEM_ID, "Settings…", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open MCP Guardrail", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&status_item, &updates_item, &open, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&status_item, &updates_item, &settings_item, &open, &quit],
+    )?;
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(tauri::include_image!("icons/tray.png"))
         .icon_as_template(true)
@@ -200,6 +272,7 @@ fn build_tray(app: &AppHandle, status: &str, updates: TrayItem) -> tauri::Result
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             UPDATES_ITEM_ID => click_updates_item(app),
+            SETTINGS_ITEM_ID => show_settings_from_tray(app, SettingsTab::General),
             "open" => show_main_window(app),
             "quit" => app.exit(0),
             _ => {}
@@ -211,7 +284,7 @@ fn build_tray(app: &AppHandle, status: &str, updates: TrayItem) -> tauri::Result
     })
 }
 
-/// A tray check also opens the window, so its result reaches the person.
+/// A tray check also opens the Updates tab, so its result reaches the person.
 fn click_updates_item(app: &AppHandle) {
     let click = app
         .state::<SharedUpdates>()
@@ -222,9 +295,9 @@ fn click_updates_item(app: &AppHandle) {
     match click {
         TrayClick::StartCheck => {
             app.state::<UpdateInbox>().send(UpdateEvent::ManualCheck);
-            show_main_window(app);
+            show_settings_from_tray(app, SettingsTab::Updates);
         }
-        TrayClick::OpenWindow => show_main_window(app),
+        TrayClick::OpenWindow => show_settings_from_tray(app, SettingsTab::Updates),
         TrayClick::Restart => app.restart(),
         TrayClick::Nothing => {}
     }
@@ -392,7 +465,8 @@ fn main() {
             set_update_mode,
             install_update,
             restart_to_update,
-            open_release_page
+            open_release_page,
+            open_settings
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -463,4 +537,51 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("the app failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SettingsTab;
+    use serde_json::json;
+
+    #[test]
+    fn each_tab_parses_from_its_name_and_serializes_back_to_it() {
+        for (name, tab) in [
+            ("general", SettingsTab::General),
+            ("updates", SettingsTab::Updates),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<SettingsTab>(json!(name)).ok(),
+                Some(tab),
+                "{name} parses"
+            );
+            assert_eq!(tab.name(), name, "{name}: the page fragment");
+            assert_eq!(
+                serde_json::to_value(tab).ok(),
+                Some(json!(name)),
+                "{name}: the tab event payload"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_outside_the_fixed_set_is_refused() {
+        for name in [
+            "",
+            "General",
+            "UPDATES",
+            "advanced",
+            "general ",
+            "updates#x",
+        ] {
+            assert!(
+                serde_json::from_value::<SettingsTab>(json!(name)).is_err(),
+                "{name:?} must be refused"
+            );
+        }
+        assert!(
+            serde_json::from_value::<SettingsTab>(json!(1)).is_err(),
+            "a number must be refused"
+        );
+    }
 }
