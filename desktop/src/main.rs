@@ -1,6 +1,7 @@
-//! Tray app: watches the proxy's audit log and notifies on blocked calls. The only file it
-//! writes is its own settings file. It never talks to a proxy, so it cannot weaken one, and the
-//! proxy runs the same without it.
+//! Tray app: watches the proxy's audit log, notifies on blocked calls, and checks for its own
+//! updates. The only files it writes are its own settings files and, when it installs an
+//! update, the new version of itself. It never talks to a proxy, so it cannot weaken one, and
+//! the proxy runs the same without it. Only `updater.rs` reaches the network.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -12,12 +13,15 @@ mod settings;
 #[path = "../../src/machines/spec_graph.rs"]
 mod spec_graph;
 mod tail;
+mod update;
+mod update_settings;
+mod updater;
 mod watch;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use audit::{Snapshot, tray_status};
 use monitor::Monitor;
@@ -25,6 +29,10 @@ use settings::{EffectiveSettings, SettingsStore, SettingsView};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use update::{
+    RELEASE_PAGE_URL, Remembered, SaveRequest, TrayClick, TrayItem, UpdateEvent, UpdateMachine,
+    UpdateMode, UpdateView,
+};
 
 const LOG_PATH_VARIABLE: &str = "MCP_GUARDRAIL_AUDIT_LOG";
 /// The path the README's quick start uses, relative to the home folder.
@@ -34,6 +42,16 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const TRAY_ID: &str = "main";
 const WATCHER_STOPPED: &str =
     "Saved. The log watcher stopped. Relaunch the app to apply the change.";
+/// The update settings sit in their own folder, so an update save never replaces the Settings
+/// section's `settings.json`, and a Settings save never replaces the update file.
+const UPDATE_SETTINGS_DIR: &str = "updates";
+const UPDATES_ITEM_ID: &str = "updates";
+const TICK_INTERVAL: Duration = Duration::from_secs(60);
+
+#[cfg(target_os = "macos")]
+const OPEN_URL_PROGRAM: &str = "open";
+#[cfg(not(target_os = "macos"))]
+const OPEN_URL_PROGRAM: &str = "xdg-open";
 
 type SharedSnapshot = Arc<Mutex<Snapshot>>;
 
@@ -42,6 +60,27 @@ type SharedSnapshot = Arc<Mutex<Snapshot>>;
 struct SettingsState {
     store: SettingsStore,
     sender: Sender<EffectiveSettings>,
+}
+
+/// What the window and the tray item show about updates.
+#[derive(Clone, PartialEq)]
+struct UpdateScreen {
+    view: UpdateView,
+    tray: TrayItem,
+}
+
+/// The tray menu reads the tray item's click from here, because only `UpdateWatch` holds the
+/// machine.
+type SharedUpdates = Arc<Mutex<UpdateScreen>>;
+
+/// Sends events to `UpdateWatch`, which owns the update machine.
+struct UpdateInbox(Sender<UpdateEvent>);
+
+impl UpdateInbox {
+    fn send(&self, event: UpdateEvent) {
+        // The send fails only when the update thread is gone, as the app quits.
+        let _ = self.0.send(event);
+    }
 }
 
 #[tauri::command]
@@ -88,6 +127,47 @@ fn set_notifications(
     Ok(state.store.view())
 }
 
+#[tauri::command]
+fn update_status(state: tauri::State<'_, SharedUpdates>) -> UpdateView {
+    state.lock().expect("the update screen lock").view.clone()
+}
+
+#[tauri::command]
+fn check_for_updates(inbox: tauri::State<'_, UpdateInbox>) {
+    inbox.send(UpdateEvent::ManualCheck);
+}
+
+#[tauri::command]
+fn set_update_mode(mode: UpdateMode, inbox: tauri::State<'_, UpdateInbox>) {
+    inbox.send(UpdateEvent::ChooseMode(mode));
+}
+
+#[tauri::command]
+fn install_update(inbox: tauri::State<'_, UpdateInbox>) {
+    inbox.send(UpdateEvent::ManualInstall);
+}
+
+#[tauri::command]
+fn restart_to_update(app: AppHandle, state: tauri::State<'_, SharedUpdates>) {
+    let ready = state
+        .lock()
+        .expect("the update screen lock")
+        .view
+        .restart_ready;
+    if ready {
+        app.restart();
+    }
+}
+
+#[tauri::command]
+fn open_release_page() -> Result<(), String> {
+    std::process::Command::new(OPEN_URL_PROGRAM)
+        .arg(RELEASE_PAGE_URL)
+        .spawn()
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -95,23 +175,59 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn build_tray(app: &AppHandle, status: &str) -> tauri::Result<MenuItem<tauri::Wry>> {
+/// The tray items whose text changes after launch.
+struct TrayItems {
+    status: MenuItem<tauri::Wry>,
+    updates: MenuItem<tauri::Wry>,
+}
+
+fn build_tray(app: &AppHandle, status: &str, updates: TrayItem) -> tauri::Result<TrayItems> {
     let status_item = MenuItem::with_id(app, "status", status, false, None::<&str>)?;
+    let updates_item = MenuItem::with_id(
+        app,
+        UPDATES_ITEM_ID,
+        updates.label,
+        updates.enabled,
+        None::<&str>,
+    )?;
     let open = MenuItem::with_id(app, "open", "Open MCP Guardrail", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&status_item, &open, &quit])?;
+    let menu = Menu::with_items(app, &[&status_item, &updates_item, &open, &quit])?;
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(tauri::include_image!("icons/tray.png"))
         .icon_as_template(true)
         .tooltip(status)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
+            UPDATES_ITEM_ID => click_updates_item(app),
             "open" => show_main_window(app),
             "quit" => app.exit(0),
             _ => {}
         })
         .build(app)?;
-    Ok(status_item)
+    Ok(TrayItems {
+        status: status_item,
+        updates: updates_item,
+    })
+}
+
+/// A tray check also opens the window, so its result reaches the person.
+fn click_updates_item(app: &AppHandle) {
+    let click = app
+        .state::<SharedUpdates>()
+        .lock()
+        .expect("the update screen lock")
+        .tray
+        .click;
+    match click {
+        TrayClick::StartCheck => {
+            app.state::<UpdateInbox>().send(UpdateEvent::ManualCheck);
+            show_main_window(app);
+        }
+        TrayClick::OpenWindow => show_main_window(app),
+        TrayClick::Restart => app.restart(),
+        TrayClick::Nothing => {}
+    }
 }
 
 fn publish(
@@ -159,14 +275,124 @@ fn watch_log(
     }
 }
 
+/// Wall-clock milliseconds. A clock before 1970 reads as 0.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Sends `Tick` every `TICK_INTERVAL` until the update thread is gone.
+fn tick(inbox: Sender<UpdateEvent>) {
+    loop {
+        std::thread::sleep(TICK_INTERVAL);
+        if inbox.send(UpdateEvent::Tick).is_err() {
+            return;
+        }
+    }
+}
+
+/// The update thread: it owns the machine and carries out what each event's step asks for.
+struct UpdateWatch {
+    app: AppHandle,
+    shared: SharedUpdates,
+    item: MenuItem<tauri::Wry>,
+    results: Sender<UpdateEvent>,
+    update_settings_dir: PathBuf,
+    current_version: String,
+}
+
+impl UpdateWatch {
+    /// Handles events until the channel closes. `settings_note` starts as the launch note.
+    fn run(
+        &self,
+        mut machine: UpdateMachine,
+        events: Receiver<UpdateEvent>,
+        mut settings_note: Option<String>,
+    ) {
+        for event in events {
+            if let UpdateEvent::CheckFailed(reason) | UpdateEvent::InstallFailed(reason) = &event {
+                eprintln!("mcp-guardrail-desktop: update failed: {reason}");
+            }
+            let actions = machine.handle(now_ms(), event);
+            if let Some(request) = actions.request {
+                updater::start(&self.app, request, self.results.clone());
+            }
+            if let Some(save) = actions.save {
+                settings_note = self.save(&save);
+            }
+            if let Some(notice) = actions.notice {
+                notify::send(&self.app, &notice);
+            }
+            self.show(update_screen(
+                &machine,
+                &self.current_version,
+                settings_note.clone(),
+            ));
+        }
+    }
+
+    /// Saves, and returns the settings note that follows. A failed save keeps the values in
+    /// memory, so the machine still acts on them until the app quits.
+    fn save(&self, save: &SaveRequest) -> Option<String> {
+        match update_settings::save(&self.update_settings_dir, save) {
+            Ok(()) => None,
+            Err(error) => {
+                eprintln!("mcp-guardrail-desktop: update settings could not be saved: {error}");
+                Some(update_settings::save_failed_note(&error))
+            }
+        }
+    }
+
+    /// Menu item calls wait for the main thread, and the main thread takes the screen lock in
+    /// the tray handler and the commands. So the lock is released before the menu changes,
+    /// or the two threads can wait on each other forever.
+    fn show(&self, screen: UpdateScreen) {
+        let tray = screen.tray;
+        {
+            let mut shown = self.shared.lock().expect("the update screen lock");
+            if *shown == screen {
+                return;
+            }
+            *shown = screen;
+        }
+        let _ = self.item.set_text(tray.label);
+        let _ = self.item.set_enabled(tray.enabled);
+        let _ = self.app.emit("updates-changed", ());
+    }
+}
+
+fn update_screen(
+    machine: &UpdateMachine,
+    current_version: &str,
+    settings_note: Option<String>,
+) -> UpdateScreen {
+    UpdateScreen {
+        view: UpdateView {
+            settings_note,
+            ..machine.view(current_version)
+        },
+        tray: machine.tray_item(),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(updater::plugin())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             settings,
             set_audit_log_path,
-            set_notifications
+            set_notifications,
+            update_status,
+            check_for_updates,
+            set_update_mode,
+            install_update,
+            restart_to_update,
+            open_release_page
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -180,22 +406,59 @@ fn main() {
 
             notify::request_permission();
 
+            let config_dir = app.path().app_config_dir()?;
             let store = SettingsStore::load(
-                app.path().app_config_dir()?.join(SETTINGS_FILE),
+                config_dir.join(SETTINGS_FILE),
                 std::env::var_os(LOG_PATH_VARIABLE).map(PathBuf::from),
                 app.path().home_dir()?.join(DEFAULT_AUDIT_LOG),
             );
             let (monitor, first) = Monitor::open(&store.effective());
-            let status_item = build_tray(app.handle(), &tray_status(&first))?;
+
+            let update_settings_dir = config_dir.join(UPDATE_SETTINGS_DIR);
+            let (saved, settings_note) = update_settings::load(&update_settings_dir);
+            let can_install = update::can_install(
+                cfg!(feature = "self-install"),
+                std::env::consts::OS,
+                std::env::var_os("APPIMAGE").is_some(),
+            );
+            let machine = UpdateMachine::new(
+                saved.update_mode.unwrap_or_default(),
+                Remembered {
+                    told: saved.notified_version,
+                    failed: saved.failed_version,
+                },
+                can_install,
+            );
+            let current_version = app.package_info().version.to_string();
+            let first_updates = update_screen(&machine, &current_version, settings_note.clone());
+            let first_tray = first_updates.tray;
+            let updates: SharedUpdates = Arc::new(Mutex::new(first_updates));
+            let (inbox, events) = mpsc::channel();
+            app.manage(updates.clone());
+            app.manage(UpdateInbox(inbox.clone()));
+
+            let tray = build_tray(app.handle(), &tray_status(&first), first_tray)?;
             let shared: SharedSnapshot = Arc::new(Mutex::new(first));
             app.manage(shared.clone());
             let (sender, receiver) = mpsc::channel();
             app.manage(Mutex::new(SettingsState { store, sender }));
 
             let handle = app.handle().clone();
+            let status_item = tray.status;
             std::thread::spawn(move || {
                 watch_log(handle, shared, status_item, monitor, receiver);
             });
+
+            let update_watch = UpdateWatch {
+                app: app.handle().clone(),
+                shared: updates,
+                item: tray.updates,
+                results: inbox.clone(),
+                update_settings_dir,
+                current_version,
+            };
+            std::thread::spawn(move || update_watch.run(machine, events, settings_note));
+            std::thread::spawn(move || tick(inbox));
             Ok(())
         })
         .run(tauri::generate_context!())

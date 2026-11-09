@@ -31,13 +31,15 @@ cat <<NOTES
 | Linux x86_64 | \`mcp-guardrail-desktop-$version-linux-x86_64\` as \`.deb\`, \`.rpm\`, or \`.AppImage\` |
 | Linux arm64 | \`mcp-guardrail-desktop-$version-linux-arm64\` as \`.deb\`, \`.rpm\`, or \`.AppImage\` |
 
+The two \`.app.tar.gz\` files and \`mcp-guardrail-desktop-update.json\` are for the app's updater, so you do not need to download them.
+
 The macOS app has an ad hoc signature, not a Developer ID, so macOS blocks it the first time. Drag it to Applications, then run:
 
 \`\`\`sh
 xattr -dr com.apple.quarantine "/Applications/MCP Guardrail.app"
 \`\`\`
 
-The app only reads the audit log.
+The app reads the audit log, and it contacts github.com only for updates.
 
 ## Download the proxy
 

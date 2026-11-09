@@ -272,7 +272,7 @@ The config also checks the variable types and one step property, `MonotonicTaint
 
 ### The other state machines
 
-Seven more specs cover the rest of the code that keeps state: one call's judgment, the session lifecycle, the line reader, the stderr splitter, the line writer, and the desktop app's log cursor and poll gate. [specs/README.md](specs/README.md) lists each machine, what its spec proves, and what was left out.
+Eight more specs cover the rest of the code that keeps state: one call's judgment, the session lifecycle, the line reader, the stderr splitter, the line writer, and the desktop app's log cursor, poll gate, and update check. [specs/README.md](specs/README.md) lists each machine, what its spec proves, and what was left out.
 
 These specs reach the code directly. TLC writes each spec's state graph, the script fails if it differs from the committed file in `specs/graphs`, and a test walks the Rust machine along every edge of that file.
 
@@ -384,7 +384,7 @@ The probe does not prove these things:
 
 ## Desktop app
 
-`desktop/` holds a tray app prototype. It watches an audit log and notifies you when a call is blocked. The only file it writes is its own settings file. It is a separate crate that never talks to a proxy, so the proxy behaves the same with or without it. [INSTALL.md](INSTALL.md) installs it by default on macOS. See [desktop/README.md](desktop/README.md).
+`desktop/` holds a tray app prototype. It watches an audit log and notifies you when a call is blocked. It writes only its own settings files, plus the new version of itself when it installs an update. It is a separate crate that never talks to a proxy, so the proxy behaves the same with or without it. By default it contacts github.com to check for updates about one minute after launch and once a day after that. Choose Off in its window to stop that. [INSTALL.md](INSTALL.md) installs it by default on macOS. See [desktop/README.md](desktop/README.md).
 
 ## Replay and benchmarks
 
@@ -419,9 +419,10 @@ MCP_GUARDRAIL_OFFLINE=1 ./scripts/verify-tla.sh
 cargo run -- check-policy --policy policies/default-policy.toml
 cargo run -- replay --policy policies/default-policy.toml --corpus fixtures/replay-corpus.json
 ! grep -rnE 'std::net|TcpStream|UdpSocket|reqwest|hyper' src tests
+! grep -rlE 'std::net|TcpStream|UdpSocket|reqwest|hyper|tauri_plugin_updater|UpdaterExt' desktop/src | grep -vx 'desktop/src/updater.rs'
 ```
 
-The last command proves that no source or test file opens a network connection.
+The last two commands prove that no proxy source or test file opens a network connection, and that in the desktop app only `desktop/src/updater.rs` names a network API.
 
 After a change under `src`, `specs`, `tests`, `scripts`, `policies`, or `fixtures`, use the `verify-taint-invariants` skill in `.claude/skills/verify-taint-invariants/SKILL.md`. It checks that the verification still matches the tree and proves that the checks fail on a deliberate break.
 

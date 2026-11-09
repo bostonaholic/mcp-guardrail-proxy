@@ -24,7 +24,7 @@ BROKEN_EVIDENCE="Invariant NoUnapprovedTaintedSinkForwarded is violated"
 BROKEN_PASS="PASS $BROKEN_SPEC: violates NoUnapprovedTaintedSinkForwarded as expected"
 GOOD_TEST="spec_model_satisfies_all_invariants"
 BROKEN_TEST="broken_spec_model_violates_no_unapproved_tainted_sink_forwarded"
-MACHINE_SPECS="LineFramer LineSplitter LineWriter CallJudgment SessionLifecycle AuditLogTail DashboardWatch"
+MACHINE_SPECS="LineFramer LineSplitter LineWriter CallJudgment SessionLifecycle AuditLogTail DashboardWatch UpdateCheck"
 # Each line: <broken spec> <what TLC must report>.
 MACHINE_BREAKS="LineFramerBroken Invariant CompleteIsWholeLine is violated
 LineSplitterBroken Invariant BytesAreConserved is violated
@@ -33,7 +33,8 @@ CallJudgmentBroken Invariant FallbackNeverForwards is violated
 SessionLifecycleBroken Temporal properties were violated
 AuditLogTailBroken Invariant CursorTracksCurrentFile is violated
 DashboardWatchBroken Invariant ScreenIsCurrent is violated
-DashboardWatchHistoryBroken Invariant HistoryStaysSilent is violated"
+DashboardWatchHistoryBroken Invariant HistoryStaysSilent is violated
+UpdateCheckBroken Invariant NoAutomaticRequestWhenOff is violated"
 # The walks of the committed graphs that the root crate runs.
 GRAPH_WALK_TESTS="machines::framer::tests::framer_matches_every_edge_of_the_spec
 machines::splitter::tests::splitter_matches_every_edge_of_the_spec

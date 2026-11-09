@@ -14,7 +14,7 @@ A pull request with a manual or pre-merge step is not ready until an agent has r
 
 ## Rules that are not in the code
 
-- No source or test file may open a network connection. The README's last development command greps for it.
+- No proxy source or test file (`src`, `tests`) may open a network connection. In the desktop app, only `desktop/src/updater.rs` may. The README's last two development commands grep for both.
 - A new rule or taint source gets a replay scenario in `fixtures/replay-corpus.json` and a row in the README policy tables.
 - New code that remembers state between events and acts on it gets a pure machine, a spec, and a graph walk. [specs/README.md](specs/README.md) has the steps.
 - Audit lines are the only record of a decision. A change to their fields or to redaction updates the README "Audit log" section in the same commit.

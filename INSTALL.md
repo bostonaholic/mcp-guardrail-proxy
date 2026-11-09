@@ -39,7 +39,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
 
    `<BIN>` in the steps that follow is the full path that this block printed.
 
-4. Install the desktop app. The tray app shows sessions and recent calls and notifies you when a call is blocked. It builds from a clone, and this step is for macOS. On Linux, or if the user asks for the proxy only, skip to step 5. See [desktop/README.md](desktop/README.md).
+4. Install the desktop app. The tray app shows sessions and recent calls and notifies you when a call is blocked. It builds from a clone, and this step is for macOS. A clone build tells you about updates but cannot install them. On Linux, or if the user asks for the proxy only, skip to step 5. See [desktop/README.md](desktop/README.md).
 
    Run each of the five commands that follow as its own tool call, with the timeout that the command names.
 

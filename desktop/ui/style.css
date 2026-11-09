@@ -40,3 +40,11 @@ tr:last-child td { border-bottom: 0; }
 .deny, .Tainted { color: var(--deny); font-weight: 600; }
 .require-approval { color: var(--approve); font-weight: 600; }
 .allow { color: var(--allow); }
+.updates { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 16px; }
+.updates h2 { margin: 0 0 2px; }
+.updates p { margin: 6px 0 0; overflow-wrap: anywhere; }
+.updates .note { margin: 6px 0 0; }
+.modes, .actions { display: flex; gap: 6px; margin-top: 8px; }
+.updates button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+.updates button:disabled { color: var(--muted); }
+.modes button[aria-pressed="true"] { border-color: var(--fg); font-weight: 600; }

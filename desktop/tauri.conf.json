@@ -18,5 +18,12 @@
     "targets": "all",
     "macOS": { "signingIdentity": "-" },
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBQzExNUVCNkY2NjBDMkEKUldRcURHWnY2eFhCdW5aMDRNN3FRNWI3U1ZrODVzek1uclZ6a1pLVmFsYzVtbVNkaHJ1dWoxelIK",
+      "endpoints": ["https://github.com/bostonaholic/mcp-guardrail-proxy/releases/latest/download/mcp-guardrail-desktop-update.json"],
+      "requireSignedVersion": true
+    }
   }
 }

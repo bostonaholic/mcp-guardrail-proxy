@@ -1,8 +1,8 @@
 # MCP Guardrail desktop
 
-A read-only tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked.
+A tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked. It also checks for its own updates.
 
-The app reads the log and writes only its own settings file. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
+The app reads the log and writes only its own settings files, plus the new version of itself when it installs an update. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
 
 ## Run it
 
@@ -45,6 +45,30 @@ If the app cannot read `settings.json` at launch, it uses the defaults and shows
 
 Each blocked call reaches Notification Center within about 3 seconds. Open it to see the alerts. macOS decides whether a banner also pops up, using the app's setting in System Settings > Notifications and any Focus mode. The app needs a bundle signature whose identifier matches its bundle id, so `tauri.conf.json` signs ad hoc. Downloaded releases carry that ad hoc signature too, so macOS blocks them until you clear the quarantine flag, as the release notes explain. A Developer ID signature would remove that step.
 
+## Updates
+
+Click "Check for Updates…" in the tray, or Check now in the window, to start a check. A tray check also opens the window, which shows the result. The app reads one file, `https://github.com/bostonaholic/mcp-guardrail-proxy/releases/latest/download/mcp-guardrail-desktop-update.json`, and compares its version with the running version.
+
+The window has three update modes:
+
+- Off: the app makes no check until you start one.
+- Notify: the app checks on a schedule and sends one notification for each new version. This is the default.
+- Install: the app checks on a schedule and installs each new version, then asks you to restart. A copy that cannot install acts as Notify.
+
+In Notify and Install, the first check happens about one minute after launch. The next check is due 24 hours after a check that worked, or 1 hour after a check that failed. A check that you start also sets the next due time.
+
+The app saves the mode in `updates/settings.json` in its config folder. This file is separate from the `settings.json` that the Settings section writes, and neither save changes the other file. On macOS the update file is `~/Library/Application Support/com.bostonaholic.mcp-guardrail/updates/settings.json`. On Linux it is `$XDG_CONFIG_HOME/com.bostonaholic.mcp-guardrail/updates/settings.json`, by default under `~/.config`. The file has three keys, and each is optional:
+
+- `update_mode`: `off`, `notify`, or `install`. The app writes it only after you choose a mode.
+- `notified_version`: the highest version the app told you about. A version at or below it gets no second notification.
+- `failed_version`: the highest version whose install failed. A version at or below it never installs automatically. The Install button still tries it.
+
+Delete the file to reset all three. A file that the app cannot read gives Notify, and the window names the problem. Two app processes whose saves overlap can lose one change.
+
+Only a copy from a release `.dmg` or `.AppImage` can install itself. A `.deb`, an `.rpm`, or a build from a clone tells you about a new version and shows Open release page in place of Install. A copy that runs from the mounted `.dmg` volume cannot replace itself, so its install fails, and the app does not try that version again automatically. Copy the app to a folder you can write first.
+
+In the window, Install downloads and installs the version the last check found. After an install, Restart starts the new version. The app never restarts by itself. Open release page opens `https://github.com/bostonaholic/mcp-guardrail-proxy/releases/latest` in your browser.
+
 ## What the audit log cannot show
 
 - Taint lags by one call. An audit line records the level from before its call, so a call that taints a session shows up on that session's next call.
@@ -75,4 +99,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/settings.rs` holds the app's own settings. `src/tail.rs` and `src/watch.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/main.rs` holds the tray, the window, the commands, and the poll thread. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
+`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/update.rs` is the pure update machine, which decides each update check, install, and notice. `src/tail.rs`, `src/watch.rs`, and `src/update.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/settings.rs` holds the app's own settings. `src/update_settings.rs` reads and writes the update settings file. `src/updater.rs` is the only module that reaches the network. `src/notify.rs` sends the notifications. `src/main.rs` holds the tray, the window, the commands, the poll thread, and the update thread. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
