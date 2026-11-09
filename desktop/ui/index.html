@@ -7,39 +7,12 @@
   </head>
   <body>
     <header>
-      <h1>MCP Guardrail</h1>
-      <p id="log-path" class="muted"></p>
+      <div>
+        <h1>MCP Guardrail</h1>
+        <p id="log-path" class="muted"></p>
+      </div>
+      <button type="button" id="open-settings">Settings…</button>
     </header>
-    <details class="settings">
-      <summary>Settings</summary>
-      <form id="path-form">
-        <label for="path-input">Audit log path</label>
-        <input id="path-input" type="text" spellcheck="false" autocomplete="off" />
-        <button id="path-save" type="submit">Save</button>
-      </form>
-      <p id="path-variable-note" class="muted note" hidden>MCP_GUARDRAIL_AUDIT_LOG sets this path. Launch the app without it to change the path here.</p>
-      <label class="setting"><input id="notifications" type="checkbox" /> Notify me when a call is blocked</label>
-      <p id="save-error" class="banner" hidden></p>
-    </details>
-    <section class="updates">
-      <h2>Updates</h2>
-      <p class="muted">Version <span id="update-version"></span></p>
-      <div class="modes" role="group" aria-label="Update mode">
-        <button type="button" class="mode" data-mode="off">Off</button>
-        <button type="button" class="mode" data-mode="notify">Notify</button>
-        <button type="button" class="mode" data-mode="install">Install</button>
-      </div>
-      <p id="update-status"></p>
-      <p id="settings-note" class="muted note" hidden></p>
-      <p id="install-note" class="muted note" hidden></p>
-      <div class="actions">
-        <button type="button" id="check-now">Check now</button>
-        <button type="button" id="install" hidden>Install</button>
-        <button type="button" id="restart" hidden>Restart</button>
-        <button type="button" id="open-release-page" hidden>Open release page</button>
-      </div>
-      <p id="open-error" class="banner" hidden></p>
-    </section>
     <p id="source-error" class="banner" hidden></p>
     <p id="malformed" class="banner" hidden></p>
     <p id="settings-problem" class="banner" hidden></p>

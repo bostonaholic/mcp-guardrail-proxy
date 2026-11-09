@@ -384,7 +384,7 @@ The probe does not prove these things:
 
 ## Desktop app
 
-`desktop/` holds a tray app prototype. It watches an audit log and notifies you when a call is blocked. It writes only its own settings files, plus the new version of itself when it installs an update. It is a separate crate that never talks to a proxy, so the proxy behaves the same with or without it. By default it contacts github.com to check for updates about one minute after launch and once a day after that. Choose Off in its window to stop that. [INSTALL.md](INSTALL.md) installs it by default on macOS. See [desktop/README.md](desktop/README.md).
+`desktop/` holds a tray app prototype. It watches an audit log and notifies you when a call is blocked. It writes only its own settings files, plus the new version of itself when it installs an update. It is a separate crate that never talks to a proxy, so the proxy behaves the same with or without it. By default it contacts github.com to check for updates about one minute after launch and once a day after that. Choose Off on the Updates tab of its Settings window to stop that. [INSTALL.md](INSTALL.md) installs it by default on macOS. See [desktop/README.md](desktop/README.md).
 
 ## Replay and benchmarks
 

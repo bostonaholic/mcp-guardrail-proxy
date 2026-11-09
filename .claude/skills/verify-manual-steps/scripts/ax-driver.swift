@@ -10,7 +10,7 @@
 //   set <selector> <text>  Set a text field's value.
 //   press <selector>       Press a button, checkbox, or disclosure triangle.
 //
-// A selector is "#id" for an HTML id, or "AXRole:Title" such as "AXDisclosureTriangle:Settings".
+// A selector is "#id" for an HTML id, or "AXRole:Title" such as "AXCheckBox:Notify".
 // An element whose HTML has the `hidden` attribute is absent, so `get` prints found=false.
 // Exit codes: 0 ok; 1 not found, not ready, or the action failed; 2 bad usage or no permission.
 

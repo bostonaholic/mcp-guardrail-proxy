@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Settings</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="settings-window">
+    <nav id="tabs" class="toolbar" role="tablist" aria-label="Settings">
+      <button type="button" role="tab" id="tab-general" data-tab="general" aria-controls="panel-general" aria-selected="true">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <circle cx="12" cy="12" r="6.6" />
+          <path d="M12 2.5v2.9M12 18.6v2.9M2.5 12h2.9M18.6 12h2.9M5.3 5.3l2 2M16.7 16.7l2 2M5.3 18.7l2-2M16.7 7.3l2-2" />
+        </svg>
+        <span>General</span>
+      </button>
+      <button type="button" role="tab" id="tab-updates" data-tab="updates" aria-controls="panel-updates" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7.5v8M8.5 12.5l3.5 3.5 3.5-3.5" />
+        </svg>
+        <span>Updates</span>
+      </button>
+    </nav>
+    <section id="panel-general" class="panel" role="tabpanel" aria-labelledby="tab-general">
+      <form id="path-form">
+        <label for="path-input">Audit log path</label>
+        <input id="path-input" type="text" spellcheck="false" autocomplete="off" />
+        <button id="path-save" type="submit">Save</button>
+      </form>
+      <p id="path-variable-note" class="muted note" hidden>MCP_GUARDRAIL_AUDIT_LOG sets this path. Launch the app without it to change the path here.</p>
+      <label class="setting"><input id="notifications" type="checkbox" /> Notify me when a call is blocked</label>
+      <p id="save-error" class="banner" hidden></p>
+    </section>
+    <section id="panel-updates" class="panel" role="tabpanel" aria-labelledby="tab-updates" hidden>
+      <p class="muted">Version <span id="update-version"></span></p>
+      <div class="modes" role="group" aria-label="Update mode">
+        <button type="button" class="mode" data-mode="off">Off</button>
+        <button type="button" class="mode" data-mode="notify">Notify</button>
+        <button type="button" class="mode" data-mode="install">Install</button>
+      </div>
+      <p id="update-status"></p>
+      <p id="settings-note" class="muted note" hidden></p>
+      <p id="install-note" class="muted note" hidden></p>
+      <div class="actions">
+        <button type="button" id="check-now">Check now</button>
+        <button type="button" id="install" hidden>Install</button>
+        <button type="button" id="restart" hidden>Restart</button>
+        <button type="button" id="open-release-page" hidden>Open release page</button>
+      </div>
+      <p id="open-error" class="banner" hidden></p>
+    </section>
+    <script src="settings.js"></script>
+  </body>
+</html>
