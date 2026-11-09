@@ -134,6 +134,16 @@ impl SettingsStore {
         }
     }
 
+    /// The folder of the effective path, so the panel can open there: the default log sits under
+    /// a dot folder that the panels hide. Only a folder that exists is given, because no panel
+    /// documents what it does with a missing one.
+    pub fn chooser_folder(&self) -> Option<PathBuf> {
+        let path = self.effective_path();
+        path.parent()
+            .filter(|folder| folder.is_dir())
+            .map(Path::to_path_buf)
+    }
+
     /// Refuses the save while the variable sets the path, so the rule holds even if the page
     /// does not disable the field.
     pub fn set_audit_log_path(&mut self, text: &str) -> Result<(), SettingsError> {
@@ -766,6 +776,74 @@ mod tests {
                 chosen_path_text(path).map_err(|error| error.to_string()),
                 expected,
                 "{label}: the text the page gets"
+            );
+        }
+    }
+
+    // Slice 2: The panel opens in the folder of the current audit log.
+    #[test]
+    fn the_chooser_starts_in_the_folder_of_the_effective_path() {
+        let config = tempfile::tempdir().expect("create a config dir");
+        let default_folder = tempfile::tempdir().expect("create the default log folder");
+        let saved_folder = tempfile::tempdir().expect("create the saved log folder");
+        let absent = config.path().join("absent.json");
+        let saved = config.path().join("saved.json");
+        let saved_settings = serde_json::json!({
+            "audit_log_path": saved_folder.path().join("audit.jsonl"),
+        });
+        std::fs::write(&saved, saved_settings.to_string()).expect("write a saved settings file");
+        let plain = default_folder.path().join("plain");
+        std::fs::write(&plain, "").expect("write a regular file");
+        let rows = [
+            (
+                "a default path in an existing folder",
+                absent.clone(),
+                None,
+                default_folder.path().join("audit.jsonl"),
+                Some(default_folder.path().to_path_buf()),
+            ),
+            (
+                "a saved path in another existing folder",
+                saved.clone(),
+                None,
+                default_folder.path().join("audit.jsonl"),
+                Some(saved_folder.path().to_path_buf()),
+            ),
+            (
+                "a default path whose folder is missing",
+                absent.clone(),
+                None,
+                default_folder.path().join("missing").join("audit.jsonl"),
+                None,
+            ),
+            (
+                "a default path under a regular file",
+                absent.clone(),
+                None,
+                plain.join("audit.jsonl"),
+                None,
+            ),
+            (
+                "a default path of /",
+                absent.clone(),
+                None,
+                PathBuf::from("/"),
+                None,
+            ),
+            (
+                "an empty variable and a default path in an existing folder",
+                absent.clone(),
+                Some(PathBuf::from("")),
+                default_folder.path().join("audit.jsonl"),
+                None,
+            ),
+        ];
+        for (label, file, variable, default_path, expected) in rows {
+            let store = SettingsStore::load(file, variable, default_path);
+            assert_eq!(
+                store.chooser_folder(),
+                expected,
+                "{label}: the folder the panel opens in"
             );
         }
     }

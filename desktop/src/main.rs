@@ -164,16 +164,28 @@ fn set_notifications(
 
 /// `async` and `spawn_blocking` keep the panel's wait off two threads. A sync command runs on
 /// the main thread, where `blocking_pick_file` would wait on itself. A wait in the async task
-/// would hold one of the runtime's workers until the person closes the panel.
+/// would hold one of the runtime's workers until the person closes the panel. The settings lock
+/// is held only to read the start folder, so no other command waits on the panel.
 #[tauri::command]
-async fn choose_audit_log_path(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+async fn choose_audit_log_path(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Mutex<SettingsState>>,
+) -> Result<Option<String>, String> {
+    let folder = state
+        .lock()
+        .expect("the settings lock")
+        .store
+        .chooser_folder();
     let chosen = tauri::async_runtime::spawn_blocking(move || {
-        window
+        let mut panel = window
             .dialog()
             .file()
             .set_parent(&window)
-            .set_title("Choose the audit log")
-            .blocking_pick_file()
+            .set_title("Choose the audit log");
+        if let Some(folder) = folder {
+            panel = panel.set_directory(folder);
+        }
+        panel.blocking_pick_file()
     })
     .await
     .map_err(|error| format!("Cannot open the file chooser: {error}"))?;
