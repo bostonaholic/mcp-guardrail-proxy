@@ -59,6 +59,7 @@ function showSettings(view) {
   byId("path-input").value = view.audit_log_path;
   byId("path-input").disabled = view.path_from_variable;
   byId("path-save").disabled = view.path_from_variable;
+  byId("path-choose").disabled = view.path_from_variable;
   byId("path-variable-note").hidden = !view.path_from_variable;
   byId("notifications").checked = view.notifications;
 }
@@ -67,11 +68,26 @@ async function loadSettings() {
   showSettings(await invoke("settings"));
 }
 
+async function savePath(text) {
+  try {
+    showSettings(await invoke("set_audit_log_path", { path: text }));
+    showBanner(byId("save-error"), null);
+  } catch (message) {
+    showBanner(byId("save-error"), String(message));
+  }
+}
+
 byId("path-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  await savePath(byId("path-input").value);
+});
+
+byId("path-choose").addEventListener("click", async () => {
   try {
-    showSettings(await invoke("set_audit_log_path", { path: byId("path-input").value }));
-    showBanner(byId("save-error"), null);
+    const path = await invoke("choose_audit_log_path");
+    if (path === null) return;
+    byId("path-input").value = path;
+    await savePath(path);
   } catch (message) {
     showBanner(byId("save-error"), String(message));
   }

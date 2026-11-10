@@ -16,7 +16,7 @@ open "target/release/bundle/macos/MCP Guardrail.app"
 
 A build from a clone stays in `target/release/bundle/macos/`. [INSTALL.md](../INSTALL.md) copies it to `~/Applications/MCP Guardrail.app` and opens that copy.
 
-The app reads `~/.local/state/mcp-guardrail/audit.jsonl`, the path in the root README's quick start. To watch another file, open Settings, and save the path of that file on the General tab. You can also launch with `MCP_GUARDRAIL_AUDIT_LOG` set:
+The app reads `~/.local/state/mcp-guardrail/audit.jsonl`, the path in the root README's quick start. To watch another file, open Settings, and on the General tab either type the path of that file and save it, or press Choose… and pick the folder that holds `audit.jsonl`. You can also launch with `MCP_GUARDRAIL_AUDIT_LOG` set:
 
 ```sh
 open --env MCP_GUARDRAIL_AUDIT_LOG=/abs/path/audit.jsonl "target/release/bundle/macos/MCP Guardrail.app"
@@ -42,7 +42,7 @@ The Settings window has a fixed size. Close it when you are done. The app keeps 
 
 The General tab holds the audit log path. A saved path takes effect within one poll, with no relaunch. The dashboard then shows only the new file. Lines already in that file load as history and raise no notification.
 
-The path must be a full path that starts with `/`. The app does not expand `~`. A file that does not exist yet saves, because a proxy creates the log when it starts. A folder, a device, or a file the app cannot read shows an error, and the previous path stays. When `MCP_GUARDRAIL_AUDIT_LOG` is set, the General tab disables the path field.
+The path must be a full path that starts with `/`. The app does not expand `~`. A file that does not exist yet saves, because a proxy creates the log when it starts. Choose… picks a folder, not a file, and saves `audit.jsonl` in that folder as the path, so it works before any proxy has made the log. A log with another file name needs a typed path. A folder, a device, or a file the app cannot read shows an error, and the previous path stays. When `MCP_GUARDRAIL_AUDIT_LOG` is set, the General tab disables the path field, Choose…, and Save.
 
 The app saves its settings to `settings.json` and reads that file at launch:
 

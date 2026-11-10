@@ -26,10 +26,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use audit::{Snapshot, tray_status};
 use monitor::Monitor;
 use serde::{Deserialize, Serialize};
-use settings::{EffectiveSettings, SettingsStore, SettingsView};
+use settings::{EffectiveSettings, SettingsStore, SettingsView, chosen_folder_log_path};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 use update::{
     RELEASE_PAGE_URL, Remembered, SaveRequest, TrayClick, TrayItem, UpdateEvent, UpdateMachine,
     UpdateMode, UpdateView,
@@ -159,6 +160,43 @@ fn set_notifications(
         .send(state.store.effective())
         .map_err(|_| WATCHER_STOPPED.to_string())?;
     Ok(state.store.view())
+}
+
+/// The panel picks a folder, not a file, so a log that no proxy has created yet can be chosen.
+/// `async` and `spawn_blocking` keep the panel's wait off two threads. A sync command runs on
+/// the main thread, where `blocking_pick_folder` would wait on itself. A wait in the async task
+/// would hold one of the runtime's workers until the person closes the panel. The settings lock
+/// is held only to read the start folder, so no other command waits on the panel.
+#[tauri::command]
+async fn choose_audit_log_path(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Mutex<SettingsState>>,
+) -> Result<Option<String>, String> {
+    let folder = state
+        .lock()
+        .expect("the settings lock")
+        .store
+        .chooser_folder();
+    let chosen = tauri::async_runtime::spawn_blocking(move || {
+        let mut panel = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("Choose the audit log folder");
+        if let Some(folder) = folder {
+            panel = panel.set_directory(folder);
+        }
+        panel.blocking_pick_folder()
+    })
+    .await
+    .map_err(|error| format!("Cannot open the file chooser: {error}"))?;
+    let Some(folder) = chosen else {
+        return Ok(None);
+    };
+    let folder = folder.into_path().map_err(|error| error.to_string())?;
+    chosen_folder_log_path(folder)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -454,12 +492,14 @@ fn update_screen(
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(updater::plugin())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             settings,
             set_audit_log_path,
             set_notifications,
+            choose_audit_log_path,
             update_status,
             check_for_updates,
             set_update_mode,

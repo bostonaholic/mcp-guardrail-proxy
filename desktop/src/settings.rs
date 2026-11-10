@@ -46,10 +46,12 @@ pub struct SettingsView {
 pub enum SettingsError {
     EmptyPath,
     RelativePath,
+    IsAFolder { path: String },
     NotAFile { path: String },
     CannotRead { path: String, error: String },
     PathFromVariable,
     CannotSave { file: String, error: String },
+    NotUtf8 { path: String },
 }
 
 impl fmt::Display for SettingsError {
@@ -59,6 +61,11 @@ impl fmt::Display for SettingsError {
             Self::RelativePath => {
                 f.write_str("Enter a full path that starts with /. The app does not expand ~.")
             }
+            Self::IsAFolder { path } => write!(
+                f,
+                "{path} is a folder. Add the log's file name, such as {}, or press Choose… to pick the folder.",
+                Path::new(path).join(AUDIT_LOG_FILE_NAME).display()
+            ),
             Self::NotAFile { path } => {
                 write!(f, "{path} is not a file. Enter the path of the audit log file.")
             }
@@ -69,6 +76,10 @@ impl fmt::Display for SettingsError {
             Self::CannotSave { file, error } => {
                 write!(f, "Cannot save settings to {file}: {error}.")
             }
+            Self::NotUtf8 { path } => write!(
+                f,
+                "{path} is not valid UTF-8, so the app cannot save it. Rename the folder or choose another one."
+            ),
         }
     }
 }
@@ -127,6 +138,16 @@ impl SettingsStore {
             notifications: self.saved.notifications,
             problem: self.problem.clone(),
         }
+    }
+
+    /// The folder of the effective path, so the panel can open there: the default log sits under
+    /// a dot folder that the panels hide. Only a folder that exists is given, because no panel
+    /// documents what it does with a missing one.
+    pub fn chooser_folder(&self) -> Option<PathBuf> {
+        let path = self.effective_path();
+        path.parent()
+            .filter(|folder| folder.is_dir())
+            .map(Path::to_path_buf)
     }
 
     /// Refuses the save while the variable sets the path, so the rule holds even if the page
@@ -236,6 +257,11 @@ fn checked_audit_log_path(text: &str) -> Result<PathBuf, SettingsError> {
     match fs::metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path.to_path_buf()),
         Err(error) => return Err(cannot_read(error)),
+        Ok(metadata) if metadata.is_dir() => {
+            return Err(SettingsError::IsAFolder {
+                path: text.to_string(),
+            });
+        }
         Ok(metadata) if !metadata.is_file() => {
             return Err(SettingsError::NotAFile {
                 path: text.to_string(),
@@ -245,6 +271,23 @@ fn checked_audit_log_path(text: &str) -> Result<PathBuf, SettingsError> {
     }
     File::open(path).map_err(cannot_read)?;
     Ok(path.to_path_buf())
+}
+
+/// The file name the app watches in a chosen folder, the name the README's quick start gives
+/// `--audit-log`. A proxy that writes another name needs its path typed.
+pub const AUDIT_LOG_FILE_NAME: &str = "audit.jsonl";
+
+/// The audit log in the chosen folder, as its exact text. A lossy conversion is refused: it
+/// would name a file that does not exist, and the save accepts that as a log not yet created,
+/// so the app would watch the wrong file with no error.
+pub fn chosen_folder_log_path(folder: PathBuf) -> Result<String, SettingsError> {
+    folder
+        .join(AUDIT_LOG_FILE_NAME)
+        .into_os_string()
+        .into_string()
+        .map_err(|raw| SettingsError::NotUtf8 {
+            path: Path::new(&raw).display().to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -286,13 +329,14 @@ mod tests {
             (
                 "the root folder",
                 "/".to_string(),
-                "/ is not a file. Enter the path of the audit log file.".to_string(),
+                "/ is a folder. Add the log's file name, such as /audit.jsonl, or press Choose… to pick the folder.".to_string(),
             ),
             (
                 "a temp folder",
                 folder.display().to_string(),
                 format!(
-                    "{} is not a file. Enter the path of the audit log file.",
+                    "{} is a folder. Add the log's file name, such as {}/audit.jsonl, or press Choose… to pick the folder.",
+                    folder.display(),
                     folder.display()
                 ),
             ),
@@ -727,5 +771,97 @@ mod tests {
             None,
             "the replaced file loads with no banner"
         );
+    }
+
+    #[test]
+    fn a_chosen_folder_gives_the_audit_log_in_it_unless_it_is_not_utf8() {
+        #[cfg(unix)]
+        use std::os::unix::ffi::OsStringExt;
+        let mut rows = vec![(
+            "a folder with a space and non-ASCII letters",
+            PathBuf::from("/tmp/audit logs/journ\u{e9}e"),
+            Ok("/tmp/audit logs/journ\u{e9}e/audit.jsonl".to_string()),
+        )];
+        #[cfg(unix)]
+        rows.push((
+            "a folder that is not valid UTF-8",
+            PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/\xff".to_vec())),
+            Err("/tmp/\u{FFFD}/audit.jsonl is not valid UTF-8, so the app cannot save it. Rename the folder or choose another one.".to_string()),
+        ));
+        for (label, folder, expected) in rows {
+            assert_eq!(
+                chosen_folder_log_path(folder).map_err(|error| error.to_string()),
+                expected,
+                "{label}: the path the page gets"
+            );
+        }
+    }
+
+    // Slice 2: The panel opens in the folder of the current audit log.
+    #[test]
+    fn the_chooser_starts_in_the_folder_of_the_effective_path() {
+        let config = tempfile::tempdir().expect("create a config dir");
+        let default_folder = tempfile::tempdir().expect("create the default log folder");
+        let saved_folder = tempfile::tempdir().expect("create the saved log folder");
+        let absent = config.path().join("absent.json");
+        let saved = config.path().join("saved.json");
+        let saved_settings = serde_json::json!({
+            "audit_log_path": saved_folder.path().join("audit.jsonl"),
+        });
+        std::fs::write(&saved, saved_settings.to_string()).expect("write a saved settings file");
+        let plain = default_folder.path().join("plain");
+        std::fs::write(&plain, "").expect("write a regular file");
+        let rows = [
+            (
+                "a default path in an existing folder",
+                absent.clone(),
+                None,
+                default_folder.path().join("audit.jsonl"),
+                Some(default_folder.path().to_path_buf()),
+            ),
+            (
+                "a saved path in another existing folder",
+                saved.clone(),
+                None,
+                default_folder.path().join("audit.jsonl"),
+                Some(saved_folder.path().to_path_buf()),
+            ),
+            (
+                "a default path whose folder is missing",
+                absent.clone(),
+                None,
+                default_folder.path().join("missing").join("audit.jsonl"),
+                None,
+            ),
+            (
+                "a default path under a regular file",
+                absent.clone(),
+                None,
+                plain.join("audit.jsonl"),
+                None,
+            ),
+            (
+                "a default path of /",
+                absent.clone(),
+                None,
+                PathBuf::from("/"),
+                None,
+            ),
+            (
+                "an empty variable and a default path in an existing folder",
+                absent.clone(),
+                Some(PathBuf::from("")),
+                default_folder.path().join("audit.jsonl"),
+                None,
+            ),
+        ];
+        for (label, file, variable, default_path, expected) in rows {
+            let store = SettingsStore::load(file, variable, default_path);
+            assert_eq!(
+                store.chooser_folder(),
+                expected,
+                "{label}: the folder the panel opens in"
+            );
+        }
     }
 }
