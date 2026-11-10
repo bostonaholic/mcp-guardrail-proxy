@@ -46,6 +46,7 @@ pub struct SettingsView {
 pub enum SettingsError {
     EmptyPath,
     RelativePath,
+    IsAFolder { path: String },
     NotAFile { path: String },
     CannotRead { path: String, error: String },
     PathFromVariable,
@@ -60,6 +61,11 @@ impl fmt::Display for SettingsError {
             Self::RelativePath => {
                 f.write_str("Enter a full path that starts with /. The app does not expand ~.")
             }
+            Self::IsAFolder { path } => write!(
+                f,
+                "{path} is a folder. Add the log's file name, such as {}, or press Choose… to pick the folder.",
+                Path::new(path).join(AUDIT_LOG_FILE_NAME).display()
+            ),
             Self::NotAFile { path } => {
                 write!(f, "{path} is not a file. Enter the path of the audit log file.")
             }
@@ -251,6 +257,11 @@ fn checked_audit_log_path(text: &str) -> Result<PathBuf, SettingsError> {
     match fs::metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path.to_path_buf()),
         Err(error) => return Err(cannot_read(error)),
+        Ok(metadata) if metadata.is_dir() => {
+            return Err(SettingsError::IsAFolder {
+                path: text.to_string(),
+            });
+        }
         Ok(metadata) if !metadata.is_file() => {
             return Err(SettingsError::NotAFile {
                 path: text.to_string(),
@@ -318,13 +329,14 @@ mod tests {
             (
                 "the root folder",
                 "/".to_string(),
-                "/ is not a file. Enter the path of the audit log file.".to_string(),
+                "/ is a folder. Add the log's file name, such as /audit.jsonl, or press Choose… to pick the folder.".to_string(),
             ),
             (
                 "a temp folder",
                 folder.display().to_string(),
                 format!(
-                    "{} is not a file. Enter the path of the audit log file.",
+                    "{} is a folder. Add the log's file name, such as {}/audit.jsonl, or press Choose… to pick the folder.",
+                    folder.display(),
                     folder.display()
                 ),
             ),
