@@ -21,7 +21,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBQzExNUVCNkY2NjBDMkEKUldRcURHWnY2eFhCdW5aMDRNN3FRNWI3U1ZrODVzek1uclZ6a1pLVmFsYzVtbVNkaHJ1dWoxelIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgNjVENTcwQjdDRUMwMjU3OApSV1I0SmNET3QzRFZaZFdqSFdZd0lQam53bldMNXlGdWZ0T3lsMUhlbnJGTHlCQVp1VjFWMll1dwo=",
       "endpoints": ["https://github.com/bostonaholic/mcp-guardrail-proxy/releases/latest/download/mcp-guardrail-desktop-update.json"],
       "requireSignedVersion": true
     }
