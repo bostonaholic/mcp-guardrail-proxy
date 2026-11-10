@@ -4,6 +4,8 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 ## Unreleased
 
+## 0.3.1 - 2026-11-10
+
 ### Fixed
 
 - The General tab icon in the desktop app's Settings window is now a gear. It used to look like a ship's wheel.
