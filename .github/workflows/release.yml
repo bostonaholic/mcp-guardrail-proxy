@@ -1,8 +1,9 @@
-# Builds the proxy and the desktop app for every supported platform and attaches the files
-# to the draft GitHub release for the pushed tag. The release-new-version skill creates that
-# draft before it pushes the tag, then checks the files and publishes the release.
+# Builds the proxy and the desktop app for every supported platform, attaches the files to
+# the draft GitHub release for the pushed tag, checks them, and publishes the release. The
+# release-new-version skill creates that draft before it pushes the tag.
 #
-# A pull request that edits this file runs the builds and uploads nothing.
+# A pull request that edits this file runs the builds and the smoke test, and uploads and
+# publishes nothing.
 name: Release
 
 on:
@@ -225,3 +226,62 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Opens each macOS disk image and updater archive and checks the app inside. It does not
+  # launch the app.
+  smoke-test:
+    needs: build
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          pattern: macos-*
+          merge-multiple: true
+
+      - name: Check the macOS files
+        run: |
+          version="$(jq -r .version desktop/tauri.conf.json)"
+          for architecture in arm64 x86_64; do
+            for extension in dmg app.tar.gz; do
+              .claude/skills/release-new-version/scripts/smoke-test-dmg \
+                "dist/mcp-guardrail-desktop-$version-macos-$architecture.$extension" "$version" "$architecture"
+            done
+          done
+
+  # Publishes the draft only when every file is attached and the macOS files passed. A
+  # failure leaves the release a draft.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [upload, smoke-test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the attached files
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --repo "$GITHUB_REPOSITORY" |
+            .claude/skills/release-new-version/scripts/check-release-assets "${GITHUB_REF_NAME#v}"
+
+      - name: Publish the release
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest --repo "$GITHUB_REPOSITORY"
+          state="$(gh release view "$GITHUB_REF_NAME" --json isDraft,isPrerelease \
+            --jq '"\(.isDraft) \(.isPrerelease)"' --repo "$GITHUB_REPOSITORY")"
+          if [ "$state" != "false false" ]; then
+            echo "::error::release $GITHUB_REF_NAME is not published (isDraft isPrerelease: $state)"
+            exit 1
+          fi
+          gh release view "$GITHUB_REF_NAME" --json url --jq .url --repo "$GITHUB_REPOSITORY"
