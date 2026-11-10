@@ -18,9 +18,9 @@ A release ships the proxy and the desktop app under one version. It holds:
 | Linux x86_64, Linux arm64 | `.tar.gz` | `.deb`, `.rpm`, `.AppImage` | the `.AppImage` |
 | All | | | `mcp-guardrail-desktop-update.json` |
 
-The desktop app's updater reads `mcp-guardrail-desktop-update.json` from the latest release, then downloads the `.app.tar.gz` or the `.AppImage` for its platform. The `sign` job in the workflow signs those four files. Before the first release that the updater reads, do "Set up the update signing key" once.
+The desktop app's updater reads `mcp-guardrail-desktop-update.json` from the latest release, then downloads the `.app.tar.gz` or the `.AppImage` for its platform. The `sign` job in the workflow signs those four files. The `smoke-test` job checks the macOS files, and the `publish` job checks the file list and publishes the release. Before the first release that the updater reads, do "Set up the update signing key" once.
 
-Run the scripts from the repository root. Do the steps in order. If a script exits non-zero, stop and go to "When a step fails". A pushed tag and a published release are public, so wait for the user at both approval points.
+Run the scripts from the repository root. Do the steps in order. If a script exits non-zero, stop and go to "When a step fails". A pushed tag is public, and a tag that builds cleanly is published by the workflow, so wait for the user at the approval point.
 
 ## 1. Check the repository
 
@@ -49,7 +49,7 @@ Edit `CHANGELOG.md` under `## Unreleased`. Group entries under `### Added`, `###
 
 ## 4. Approval: version and changelog
 
-Show the user the version, why that bump, and the changelog entries. Wait for a yes. A yes covers merging the release PR, pushing the tag, and building the files, and it does not cover publishing.
+Show the user the version, why that bump, and the changelog entries. Wait for a yes. A yes covers merging the release PR, pushing the tag, building the files, and publishing: once the tag is pushed, the workflow publishes the release with no further step.
 
 ## 5. Bump and check
 
@@ -67,7 +67,7 @@ Show the user the version, why that bump, and the changelog entries. Wait for a 
 
 ## 7. Draft the release, then push the tag
 
-The workflow attaches files to an existing draft, so the draft comes first.
+The workflow attaches files to an existing draft and then publishes it, so the draft comes first.
 
 ```sh
 .claude/skills/release-new-version/scripts/render-release-notes X.Y.Z > "$TMPDIR/release-notes.md"
@@ -79,7 +79,7 @@ git push origin refs/tags/vX.Y.Z
 
 `git tag -v` must report a good signature before the push. Never pass `--no-sign`.
 
-## 8. Wait for the build
+## 8. Wait for the build and the publish
 
 The workflow takes about 30 minutes, so run this in the background:
 
@@ -90,39 +90,18 @@ gh run watch "$run_id" --exit-status
 
 If `run_id` is empty, GitHub has not registered the run yet. Run the first line again.
 
-## 9. Check the files
+The workflow then does the checks itself:
 
-Check the file list:
+- The `smoke-test` job opens both disk images and both updater archives with `scripts/smoke-test-dmg`. It does not launch the app, and nothing tests the Linux desktop files beyond their presence. The build jobs run `check-policy` on each proxy binary on its own platform before they pack the archive.
+- The `publish` job runs `scripts/check-release-assets` on the draft, then publishes it as the latest release. If either job fails, the release stays a draft.
 
-```sh
-gh release view vX.Y.Z --json assets | .claude/skills/release-new-version/scripts/check-release-assets X.Y.Z
-```
-
-On a Mac, check both disk images and both updater archives:
+## 9. Confirm the release
 
 ```sh
-dir="$(mktemp -d)"
-gh release download vX.Y.Z --pattern '*.dmg' --pattern '*.app.tar.gz' --dir "$dir"
-.claude/skills/release-new-version/scripts/smoke-test-dmg "$dir/mcp-guardrail-desktop-X.Y.Z-macos-arm64.dmg" X.Y.Z arm64
-.claude/skills/release-new-version/scripts/smoke-test-dmg "$dir/mcp-guardrail-desktop-X.Y.Z-macos-x86_64.dmg" X.Y.Z x86_64
-.claude/skills/release-new-version/scripts/smoke-test-dmg "$dir/mcp-guardrail-desktop-X.Y.Z-macos-arm64.app.tar.gz" X.Y.Z arm64
-.claude/skills/release-new-version/scripts/smoke-test-dmg "$dir/mcp-guardrail-desktop-X.Y.Z-macos-x86_64.app.tar.gz" X.Y.Z x86_64
-```
-
-These checks do not launch the app, and nothing here tests the Linux desktop files beyond their presence. The workflow runs `check-policy` on each proxy binary on its own platform before it packs the archive. Say so at the approval.
-
-## 10. Approval: publish
-
-Show the user the draft URL from `gh release view vX.Y.Z --json url --jq .url` and the results of step 9. Wait for a yes.
-
-## 11. Publish
-
-```sh
-gh release edit vX.Y.Z --draft=false --latest
 gh release view vX.Y.Z --json isDraft,isPrerelease,tagName,url,assets --jq '{isDraft, isPrerelease, tagName, url, assets: (.assets | length)}'
 ```
 
-Expect `isDraft` false, `isPrerelease` false, and 15 assets. Give the user the release URL.
+Expect `isDraft` false, `isPrerelease` false, and 15 assets. Give the user the release URL, and say what the checks above do not cover.
 
 ## When a step fails
 
@@ -132,7 +111,7 @@ Expect `isDraft` false, `isPrerelease` false, and 15 assets. Give the user the r
 | `bump-version`, `run-checks`, or `verify-taint-invariants` | Nothing is public yet. Fix it on the release branch, or on `main` first if the bug is not in the release commit. |
 | A job failed in step 8 on a runner or network error | Run `gh run rerun "$run_id" --failed`, then watch it again. |
 | The `sign` job failed in step 8: the `UPDATE_SIGNING_KEY` secret is missing, or its key does not match the public key that installed apps trust (see "Set up the update signing key") | Fix the key or the secret, as "Set up the update signing key" says. Then treat it like a real build error, in the next row. |
-| A job failed in step 8 on a real build error, or step 9 fails | Do not move or delete the pushed tag. Run `gh release delete vX.Y.Z --yes`, which removes only the draft. Fix the bug on `main`, move the section for X.Y.Z back under `## Unreleased`, and release the next patch version from step 1. |
+| A job failed in step 8 on a real build error, the `smoke-test` or `publish` check failed, or step 9 fails | Do not move or delete the pushed tag. Run `gh release delete vX.Y.Z --yes`, which removes only the draft. Fix the bug on `main`, move the section for X.Y.Z back under `## Unreleased`, and release the next patch version from step 1. |
 | A problem turns up after publishing | Do not delete the release or the tag. Fix it on `main` and release the next patch version. |
 
 `Developer ID` signing is not set up. The macOS files carry an ad hoc signature, and the release notes tell users how to open the app.
