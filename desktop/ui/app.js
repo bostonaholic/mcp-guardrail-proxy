@@ -5,6 +5,7 @@ const { listen } = window.__TAURI__.event;
 
 const byId = (id) => document.getElementById(id);
 const time = (ms) => new Date(ms).toLocaleTimeString();
+const dateTime = (ms) => new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
 
 function cell(text, className) {
   const td = document.createElement("td");
@@ -41,7 +42,7 @@ function render() {
   byId("stat-calls").textContent = latest.total_calls;
   byId("stat-blocked").textContent = latest.total_blocked;
   fillRows(byId("sessions"), sessions.map((s) => [
-    cell(s.session_id), cell(s.taint_level, s.taint_level), cell(s.calls), cell(s.blocked), cell(time(s.last_seen_ms)),
+    cell(s.session_id), cell(s.taint_level, s.taint_level), cell(s.calls), cell(s.blocked), cell(dateTime(s.last_seen_ms)),
   ]));
   const shown = byId("blocked-only").checked ? events.filter((e) => !e.forwarded) : events;
   fillRows(byId("events"), shown.map((e) => [
