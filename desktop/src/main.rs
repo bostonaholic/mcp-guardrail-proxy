@@ -1,8 +1,10 @@
 //! Tray app: watches the proxy's audit log, notifies on blocked calls, and checks for its own
 //! updates. It also reads the MCP client config files that `INSTALL.md` lists, for the Servers
-//! tab. The only files it writes are its own settings files and, when it installs an update,
-//! the new version of itself. It never talks to a proxy, so it cannot weaken one, and the proxy
-//! runs the same without it. Only `updater.rs` reaches the network.
+//! tab. It writes its own settings files and, when it installs an update, the new version of
+//! itself. A Wrap press on the Servers tab also writes client config files, their backups, and
+//! kept copies, and creates the audit log's folder and file. It never talks to a proxy, so it
+//! cannot weaken one, and the proxy runs the same without it. Only `updater.rs` reaches the
+//! network.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -27,10 +29,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use audit::{Snapshot, tray_status};
-use clients::Platform;
+use clients::{Platform, ServerId};
 use monitor::Monitor;
 use serde::{Deserialize, Serialize};
-use servers::{HostEnv, ServersView};
+use servers::{HostEnv, ServersView, WrapReport};
 use settings::{EffectiveSettings, SettingsStore, SettingsView, chosen_folder_log_path};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -64,6 +66,7 @@ const SETTINGS_TAB_EVENT: &str = "settings-tab";
 /// Lets the dashboard drop its settings banner after a save in the Settings window.
 const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
 const TICK_INTERVAL: Duration = Duration::from_secs(60);
+const WRAP_STOPPED: &str = "The wrap stopped on an internal error. Scan again before you wrap.";
 
 #[cfg(target_os = "macos")]
 const OPEN_URL_PROGRAM: &str = "open";
@@ -71,6 +74,9 @@ const OPEN_URL_PROGRAM: &str = "open";
 const OPEN_URL_PROGRAM: &str = "xdg-open";
 
 type SharedSnapshot = Arc<Mutex<Snapshot>>;
+
+/// Lets one wrap run at a time.
+struct WrapLock(Arc<Mutex<()>>);
 
 /// A tab of the Settings window. The page names a tab when it calls `open_settings`, and the
 /// command refuses any other name.
@@ -236,16 +242,35 @@ fn host_env(app: &AppHandle, home: PathBuf) -> HostEnv {
     }
 }
 
+fn home_folder_problem(error: tauri::Error) -> String {
+    format!("Cannot find your home folder: {error}")
+}
+
 #[tauri::command]
 async fn servers(app: AppHandle) -> ServersView {
     let home = match app.path().home_dir() {
         Ok(home) => home,
-        Err(error) => {
-            return ServersView::problem_only(format!("Cannot find your home folder: {error}"));
-        }
+        Err(error) => return ServersView::problem_only(home_folder_problem(error)),
     };
     let env = host_env(&app, home);
     run_blocking(move || servers::scan(&env), ServersView::stopped()).await
+}
+
+#[tauri::command]
+async fn wrap_servers(
+    app: AppHandle,
+    rows: Vec<ServerId>,
+    lock: tauri::State<'_, WrapLock>,
+) -> Result<WrapReport, String> {
+    let home = app.path().home_dir().map_err(home_folder_problem)?;
+    let env = host_env(&app, home);
+    let lock = Arc::clone(&lock.0);
+    let unix_secs = now_ms() / 1000;
+    run_blocking(
+        move || servers::wrap_request(&lock, &env, &rows, unix_secs),
+        Err(WRAP_STOPPED.to_string()),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -556,7 +581,8 @@ fn main() {
             restart_to_update,
             open_release_page,
             open_settings,
-            servers
+            servers,
+            wrap_servers
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -606,6 +632,7 @@ fn main() {
             app.manage(shared.clone());
             let (sender, receiver) = mpsc::channel();
             app.manage(Mutex::new(SettingsState { store, sender }));
+            app.manage(WrapLock(Arc::new(Mutex::new(()))));
 
             let handle = app.handle().clone();
             let status_item = tray.status;

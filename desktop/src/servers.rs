@@ -5,19 +5,33 @@
 #![allow(dead_code)]
 
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, File};
-use std::io;
-use std::os::unix::fs::FileTypeExt;
-use std::path::{Path, PathBuf};
+use std::fmt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Mutex, TryLockError};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use crate::clients::{
-    FileState, Layout, Platform, ServerId, ServerRow, Status, client_files, file_row, scan_text,
+    ClientFile, ClientId, FileState, Found, Layout, Platform, Readback, ServerId, ServerRow,
+    Status, checked_new_text, client_file, client_files, file_row, find_entry, judge_readback,
+    restart_step, scan_text, writer_blocker,
 };
+
+const PROXY_NAME: &str = "mcp-guardrail-proxy";
+const BUSY: &str = "A wrap is already running.";
+const CHANGED: &str = "changed while the app wrapped it. Scan again.";
+const BACKUP_SUFFIX: &str = ".bak-guardrail";
+const LOG_PREFIX: &str = "mcp-guardrail-desktop:";
+/// The mode of every file the app creates before it gives the file its final mode.
+const OWNER_ONLY: u32 = 0o600;
+const PERMISSION_BITS: u32 = 0o7777;
+const EXECUTE_BITS: u32 = 0o111;
 
 /// What the scan and the wrap read from the app's environment, passed as values.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,6 +143,24 @@ pub fn scan(env: &HostEnv) -> ServersView {
             }
         }
     }
+    let path = env.path.as_deref();
+    view.binary = find_binary(env, path).and_then(|bin| bin.to_str().map(str::to_string));
+    let wrap_on = match ready(env, path) {
+        Ok(_) => true,
+        Err(refusal) => {
+            view.problem = Some(refusal.to_string());
+            false
+        }
+    };
+    for row in &mut view.rows {
+        if row.status != Status::Wrappable {
+            continue;
+        }
+        match writer_blocker(row.id.client) {
+            Some(blocker) => row.reason = Some(blocker.to_string()),
+            None => row.selectable = wrap_on,
+        }
+    }
     view
 }
 
@@ -154,13 +186,366 @@ pub struct WrapReport {
     pub results: Vec<WrapResult>,
 }
 
+/// Why Wrap is off for every row. `Display` is the window text.
+#[derive(Debug)]
+enum WrapRefusal {
+    Platform,
+    NoBinary { cargo: PathBuf },
+    BinaryNotUtf8 { path: PathBuf },
+    AuditNotUtf8 { path: PathBuf },
+    AuditEmpty,
+    AuditRelative { path: String },
+    AuditNoFileName { path: String },
+    AuditNamesBackup { path: String },
+    AuditLinkToMissing,
+    AuditNamesClient { path: String, file: PathBuf },
+    AuditIsFolder { path: String },
+    AuditNotAFile { path: String },
+    AuditCannotOpen { path: String, error: io::Error },
+}
+
+impl fmt::Display for WrapRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const CHOOSE: &str = "Choose another audit log path.";
+        match self {
+            Self::Platform => f.write_str("The app wraps servers on macOS and Linux only."),
+            Self::NoBinary { cargo } => write!(
+                f,
+                "Cannot find {PROXY_NAME} on your PATH or at {}. Install it with steps 2 and 3 of INSTALL.md.",
+                cargo.display()
+            ),
+            Self::BinaryNotUtf8 { path } => write!(
+                f,
+                "The path of {PROXY_NAME}, {}, is not UTF-8, so the app cannot write it into a config file. Install the binary in a folder whose path is UTF-8.",
+                path.display()
+            ),
+            Self::AuditNotUtf8 { path } => write!(
+                f,
+                "The audit log path {} is not UTF-8, so the app cannot write it into a config file. {CHOOSE}",
+                path.display()
+            ),
+            Self::AuditEmpty => write!(f, "The audit log path is empty. {CHOOSE}"),
+            Self::AuditRelative { path } => write!(
+                f,
+                "The audit log path {path} is not a full path that starts with /. {CHOOSE}"
+            ),
+            Self::AuditNoFileName { path } => {
+                write!(f, "The audit log path {path} names no file. {CHOOSE}")
+            }
+            Self::AuditNamesBackup { path } => write!(
+                f,
+                "The audit log path {path} names a backup or a kept copy of a client config, and a wrapped server would write audit lines into it. {CHOOSE}"
+            ),
+            Self::AuditLinkToMissing => write!(
+                f,
+                "The audit log path is a link to a file that does not exist. Create that file, or choose another audit log path."
+            ),
+            Self::AuditNamesClient { path, file } => write!(
+                f,
+                "The audit log path {path} is the client config {}, and a wrapped server would write audit lines into it. {CHOOSE}",
+                file.display()
+            ),
+            Self::AuditIsFolder { path } => write!(
+                f,
+                "The audit log {path} is a folder. A wrapped server could not open it, so the app wrapped nothing. Set a log file path in the General tab."
+            ),
+            Self::AuditNotAFile { path } => write!(
+                f,
+                "The audit log {path} is not a regular file. A wrapped server could not open it, so the app wrapped nothing. Set a log file path in the General tab."
+            ),
+            Self::AuditCannotOpen { path, error } => write!(
+                f,
+                "A wrapped server could not open the audit log {path}: {error}. The app wrapped nothing."
+            ),
+        }
+    }
+}
+
+/// The binary and the audit log path that every row of a wrap writes.
+struct Ready {
+    bin: String,
+    audit_log: String,
+}
+
+/// The checks that turn Wrap off for every row. None of them creates a file or a folder, so
+/// the scan runs them too.
+fn ready(env: &HostEnv, path: Option<&OsStr>) -> Result<Ready, WrapRefusal> {
+    if env.platform == Platform::Other {
+        return Err(WrapRefusal::Platform);
+    }
+    let bin = match find_binary(env, path) {
+        None => {
+            return Err(WrapRefusal::NoBinary {
+                cargo: cargo_binary(env),
+            });
+        }
+        Some(found) => found
+            .into_os_string()
+            .into_string()
+            .map_err(|raw| WrapRefusal::BinaryNotUtf8 { path: raw.into() })?,
+    };
+    if let Some(refusal) = audit_log_refusal(env) {
+        return Err(refusal);
+    }
+    let audit_log = env
+        .audit_log_path
+        .to_str()
+        .ok_or_else(|| WrapRefusal::AuditNotUtf8 {
+            path: env.audit_log_path.clone(),
+        })?
+        .to_string();
+    Ok(Ready { bin, audit_log })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| {
+        metadata.is_file() && metadata.permissions().mode() & EXECUTE_BITS != 0
+    })
+}
+
+/// The first executable regular file `name` in the folders of `path`, as `command -v` finds it.
+fn find_on_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    std::env::split_paths(path?)
+        .filter(|folder| folder.is_absolute())
+        .map(|folder| folder.join(name))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+fn non_empty(value: &Option<OsString>) -> Option<PathBuf> {
+    value
+        .as_ref()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// `${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin/mcp-guardrail-proxy`, where install
+/// step 2 puts the binary (`INSTALL.md:31`).
+fn cargo_binary(env: &HostEnv) -> PathBuf {
+    non_empty(&env.cargo_install_root)
+        .or_else(|| non_empty(&env.cargo_home))
+        .unwrap_or_else(|| env.home.join(".cargo"))
+        .join("bin")
+        .join(PROXY_NAME)
+}
+
+/// The binary that install step 3 finds: the first on `path`, else the cargo install folder.
+pub fn find_binary(env: &HostEnv, path: Option<&OsStr>) -> Option<PathBuf> {
+    find_on_path(PROXY_NAME, path).or_else(|| {
+        let cargo = cargo_binary(env);
+        is_executable_file(&cargo).then_some(cargo)
+    })
+}
+
+/// The path as the OS resolves it, also when its end does not exist yet: the canonical form of
+/// the nearest folder that exists, joined with the rest, where each `..` drops the part before
+/// it, as `create_dir_all` and an open resolve it.
+fn resolved(path: &Path) -> PathBuf {
+    let parts: Vec<Component<'_>> = path.components().collect();
+    for keep in (1..parts.len()).rev() {
+        let base: PathBuf = parts[..keep].iter().collect();
+        let Ok(mut resolved) = fs::canonicalize(&base) else {
+            continue;
+        };
+        for part in &parts[keep..] {
+            match part {
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                Component::CurDir => {}
+                other => resolved.push(other.as_os_str()),
+            }
+        }
+        return resolved;
+    }
+    path.to_path_buf()
+}
+
+/// A default macOS volume ignores case, so `~/.Cursor/MCP.json` is `~/.cursor/mcp.json`.
+fn same_ignoring_ascii_case(left: &Path, right: &Path) -> bool {
+    left.as_os_str()
+        .as_bytes()
+        .eq_ignore_ascii_case(right.as_os_str().as_bytes())
+}
+
+fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn names_backup(name: &OsStr) -> bool {
+    name.to_string_lossy().contains(BACKUP_SUFFIX)
+}
+
+/// A proxy appends audit lines to its log. So the log must not be a client file of the table,
+/// whether that file exists or not, nor a backup or a kept copy, directly or through a link.
+fn audit_log_refusal(env: &HostEnv) -> Option<WrapRefusal> {
+    let path = &env.audit_log_path;
+    let Some(text) = path.to_str() else {
+        return Some(WrapRefusal::AuditNotUtf8 { path: path.clone() });
+    };
+    if text.is_empty() {
+        return Some(WrapRefusal::AuditEmpty);
+    }
+    let shown = text.to_string();
+    if !path.is_absolute() {
+        return Some(WrapRefusal::AuditRelative { path: shown });
+    }
+    let Some(name) = path.file_name() else {
+        return Some(WrapRefusal::AuditNoFileName { path: shown });
+    };
+    if names_backup(name) {
+        return Some(WrapRefusal::AuditNamesBackup { path: shown });
+    }
+    let is_link = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink());
+    let target = fs::metadata(path);
+    if is_link
+        && target
+            .as_ref()
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+    {
+        return Some(WrapRefusal::AuditLinkToMissing);
+    }
+    let audit = resolved(path);
+    let clients = client_files(env.platform, &env.home);
+    let named = clients
+        .iter()
+        .find(|file| same_ignoring_ascii_case(&audit, &resolved(&file.path)));
+    if let Some(file) = named {
+        return Some(WrapRefusal::AuditNamesClient {
+            path: shown,
+            file: file.path.clone(),
+        });
+    }
+    let Ok(target) = target else {
+        return None;
+    };
+    let linked = clients
+        .iter()
+        .find(|file| fs::metadata(&file.path).is_ok_and(|client| same_file(&client, &target)));
+    if let Some(file) = linked {
+        return Some(WrapRefusal::AuditNamesClient {
+            path: shown,
+            file: file.path.clone(),
+        });
+    }
+    let real_name = fs::canonicalize(path)
+        .ok()
+        .and_then(|real| real.file_name().map(OsStr::to_os_string));
+    if real_name.is_some_and(|name| names_backup(&name)) {
+        return Some(WrapRefusal::AuditNamesBackup { path: shown });
+    }
+    None
+}
+
+/// Makes sure a proxy can open the audit log, with the open of `JsonlAuditSink::create`
+/// (`src/telemetry.rs:239-250`). A missing log becomes an empty file, as the first proxy start
+/// would make it. Metadata comes first, because an open of a named pipe blocks.
+fn prepare_audit_log(path: &Path) -> Result<(), WrapRefusal> {
+    let shown = path.display().to_string();
+    let cannot_open = |error: io::Error| WrapRefusal::AuditCannotOpen {
+        path: shown.clone(),
+        error,
+    };
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            return Err(WrapRefusal::AuditIsFolder {
+                path: shown.clone(),
+            });
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(WrapRefusal::AuditNotAFile {
+                path: shown.clone(),
+            });
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(cannot_open(error)),
+    }
+    if let Some(folder) = path.parent() {
+        fs::create_dir_all(folder).map_err(cannot_open)?;
+    }
+    OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(OWNER_ONLY)
+        .open(path)
+        .map(drop)
+        .map_err(cannot_open)
+}
+
+/// Wraps the requested rows, one at a time in request order. A problem with one row is a row
+/// result. The `Err` text refuses the whole request before any write.
 pub fn wrap_request(
-    _lock: &Mutex<()>,
-    _env: &HostEnv,
-    _rows: &[ServerId],
-    _unix_secs: u64,
+    lock: &Mutex<()>,
+    env: &HostEnv,
+    rows: &[ServerId],
+    unix_secs: u64,
 ) -> Result<WrapReport, String> {
-    Err(String::from("not written yet"))
+    // The lock guards no data, and each row keeps its original before its change, so a lock
+    // that a panic poisoned is free.
+    let _running = match lock.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => return Err(BUSY.to_string()),
+    };
+    if rows.is_empty() {
+        return Ok(WrapReport {
+            results: Vec::new(),
+        });
+    }
+    let started = Instant::now();
+    let login = env.path.as_deref();
+    let ready = ready(env, login).map_err(|refusal| refusal.to_string())?;
+    prepare_audit_log(&env.audit_log_path).map_err(|refusal| refusal.to_string())?;
+    let results: Vec<WrapResult> = rows
+        .iter()
+        .map(|id| {
+            let inputs = RowInputs {
+                env,
+                id,
+                bin: &ready.bin,
+                audit_log: &ready.audit_log,
+                login_path: login,
+                unix_secs,
+            };
+            let mut kept_copy = None;
+            let result = row_result(id, wrap_row(&inputs, &mut kept_copy));
+            if result.outcome == Outcome::Failed {
+                eprintln!(
+                    "{LOG_PREFIX} wrap failed: {} {}: {}",
+                    result.client, result.server, result.message
+                );
+            }
+            result
+        })
+        .collect();
+    log_summary(&results, started.elapsed());
+    Ok(WrapReport { results })
+}
+
+fn row_result(id: &ServerId, end: RowEnd) -> WrapResult {
+    WrapResult {
+        id: id.clone(),
+        client: id.client.label().to_string(),
+        server: id.name.clone(),
+        outcome: end.outcome,
+        message: end.message,
+    }
+}
+
+fn log_summary(results: &[WrapResult], elapsed: Duration) {
+    let count = |outcome: Outcome| {
+        results
+            .iter()
+            .filter(|result| result.outcome == outcome)
+            .count()
+    };
+    eprintln!(
+        "{LOG_PREFIX} wrap: {} wrapped, {} skipped, {} failed in {} ms",
+        count(Outcome::Wrapped),
+        count(Outcome::Skipped),
+        count(Outcome::Failed),
+        elapsed.as_millis()
+    );
 }
 
 /// How one row ended. `unrecovered` is an end that no read confirmed.
@@ -171,12 +556,40 @@ pub struct RowEnd {
     pub unrecovered: bool,
 }
 
-pub fn run_rows(
-    _env: &HostEnv,
-    _rows: &[ServerId],
-    _row: &mut dyn FnMut(&ServerId, &mut Option<PathBuf>) -> RowEnd,
-) -> Vec<WrapResult> {
-    Vec::new()
+fn skipped(message: String) -> RowEnd {
+    RowEnd {
+        outcome: Outcome::Skipped,
+        message,
+        unrecovered: false,
+    }
+}
+
+/// A row that failed before its change. A kept copy is no longer needed, so it goes.
+fn failed_before(kept_copy: Option<&Path>, message: String) -> RowEnd {
+    RowEnd {
+        outcome: Outcome::Failed,
+        message: match kept_copy {
+            Some(kept) => with_kept_copy_removed(kept, message),
+            None => message,
+        },
+        unrecovered: false,
+    }
+}
+
+/// An end that a read confirmed removes the kept copy. A failed remove keeps the outcome and
+/// names the copy, which holds the `env` values.
+fn with_kept_copy_removed(kept_copy: &Path, message: String) -> String {
+    match fs::remove_file(kept_copy) {
+        Ok(()) => message,
+        Err(error) => format!(
+            "{message} The app could not remove {}, which holds your env values: {error}. Remove it.",
+            kept_copy.display()
+        ),
+    }
+}
+
+fn no_longer_in(name: &str, file: &Path) -> String {
+    format!("Not wrapped: {name} is no longer in {}.", file.display())
 }
 
 /// What one row of a wrap needs besides its first read.
@@ -189,34 +602,334 @@ pub struct RowInputs<'a> {
     pub unix_secs: u64,
 }
 
+impl RowInputs<'_> {
+    fn file(&self) -> Option<ClientFile> {
+        client_file(self.env.platform, &self.env.home, self.id.client)
+    }
+}
+
+fn real_path(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn backup_path(listed: &Path) -> PathBuf {
+    suffixed(listed, BACKUP_SUFFIX)
+}
+
+/// The bytes, mode, owner, and group of a file, all from one open.
+fn read_state(path: &Path) -> io::Result<FileState> {
+    if !fs::metadata(path)?.is_file() {
+        return Err(io::Error::other("it is not a regular file"));
+    }
+    let mut file = File::open(path)?;
+    let metadata = file.metadata()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(FileState {
+        bytes,
+        mode: metadata.mode() & PERMISSION_BITS,
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+    })
+}
+
+/// Claude Code rewrites `~/.claude.json` while it runs, so only `claude` may change it
+/// (`INSTALL.md:197`), also through a link from another client path.
+fn is_claude_json(env: &HostEnv, real: &Path) -> bool {
+    let Some(claude) = client_file(env.platform, &env.home, ClientId::ClaudeCodeUser) else {
+        return false;
+    };
+    if fs::canonicalize(&claude.path).is_ok_and(|path| path == real) {
+        return true;
+    }
+    match (fs::metadata(&claude.path), fs::metadata(real)) {
+        (Ok(claude), Ok(other)) => same_file(&claude, &other),
+        _ => false,
+    }
+}
+
+fn wrap_row(inputs: &RowInputs<'_>, kept_copy: &mut Option<PathBuf>) -> RowEnd {
+    let id = inputs.id;
+    let Some(file) = inputs.file() else {
+        return skipped(format!(
+            "Not wrapped: the app reads no {} config on this platform.",
+            id.client.label()
+        ));
+    };
+    if let Some(blocker) = writer_blocker(id.client) {
+        return skipped(format!("Not wrapped: {blocker}"));
+    }
+    let real = real_path(&file.path);
+    if is_claude_json(inputs.env, &real) {
+        return failed_before(
+            None,
+            format!(
+                "{} is ~/.claude.json, which changes only through the claude command, so the app left it as it is.",
+                file.path.display()
+            ),
+        );
+    }
+    match read_state(&real) {
+        Ok(first) => wrap_row_from(inputs, first, kept_copy),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            skipped(no_longer_in(&id.name, &file.path))
+        }
+        Err(error) => failed_before(
+            None,
+            format!(
+                "Cannot read {}: {error}. The app left it as it is.",
+                file.path.display()
+            ),
+        ),
+    }
+}
+
+/// The row after its first read. Before the rename, a failure leaves the file as the first read
+/// found it. The rename is the only write to the file in a row.
 pub fn wrap_row_from(
-    _inputs: &RowInputs<'_>,
-    _first: FileState,
-    _kept_copy: &mut Option<PathBuf>,
+    inputs: &RowInputs<'_>,
+    first: FileState,
+    kept_copy: &mut Option<PathBuf>,
 ) -> RowEnd {
-    RowEnd {
-        outcome: Outcome::Failed,
-        message: String::from("not written yet"),
-        unrecovered: false,
+    let id = inputs.id;
+    let Some(file) = inputs.file() else {
+        return skipped(format!(
+            "Not wrapped: the app reads no {} config on this platform.",
+            id.client.label()
+        ));
+    };
+    let listed = &file.path;
+    let shown = listed.display();
+    let real = real_path(listed);
+    let Ok(text) = std::str::from_utf8(&first.bytes) else {
+        return failed_before(
+            None,
+            format!("{shown} is not UTF-8 text, so the app left it as it is."),
+        );
+    };
+    match find_entry(&file, text, id, &|folder| folder.is_dir()) {
+        Found::NotParsed(reason) => {
+            return skipped(format!("Not wrapped: {shown} {reason}. Scan again."));
+        }
+        Found::Missing => return skipped(no_longer_in(&id.name, listed)),
+        Found::Entry { status, .. } if status != Status::Wrappable => {
+            return skipped(format!("Not wrapped: the entry is {} now.", status.name()));
+        }
+        Found::Entry { .. } => {}
     }
+    let lookup = |name: &str| find_on_path(name, inputs.login_path);
+    let new = match checked_new_text(&file, text, &id.name, inputs.bin, inputs.audit_log, &lookup) {
+        Ok(new) => new,
+        Err(error) => {
+            return failed_before(
+                None,
+                format!(
+                    "The app could not build the new entry: {}. It left {shown} as it was.",
+                    error.reason
+                ),
+            );
+        }
+    };
+    if let Err(error) = write_backup(listed, &first) {
+        return failed_before(None, write_failure(&error, listed, &backup_path(listed)));
+    }
+    let kept = match create_kept_copy(listed, &first.bytes, inputs.unix_secs) {
+        Ok(kept) => kept,
+        Err((kept, error)) => {
+            return failed_before(
+                None,
+                format!(
+                    "Cannot create the kept copy {}: {error}. The app left {shown} as it was.",
+                    kept.display()
+                ),
+            );
+        }
+    };
+    *kept_copy = Some(kept.clone());
+    let temp = suffixed(&real, &format!(".{}.tmp", std::process::id()));
+    if let Err(error) = write_temp(&temp, new.text.as_bytes(), first.gid, first.mode) {
+        return failed_before(Some(&kept), write_failure(&error, listed, &temp));
+    }
+    if !read_state(&real).is_ok_and(|now| now == first) {
+        let _ = fs::remove_file(&temp);
+        return failed_before(Some(&kept), format!("{shown} {CHANGED}"));
+    }
+    if fs::rename(&temp, &real).is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    let readback = fs::read(&real).ok();
+    let mut end = end_file_row(
+        inputs,
+        new.text.as_bytes(),
+        &first,
+        readback.as_deref(),
+        &kept,
+    );
+    if end.outcome == Outcome::Wrapped && !new.notes.is_empty() {
+        end.message
+            .push_str(&format!(" Notes: {}.", new.notes.join(", ")));
+    }
+    end
 }
 
+/// Judges a file row by what the read after the rename holds, never by the rename's result.
 pub fn end_file_row(
-    _inputs: &RowInputs<'_>,
-    _new_text: &[u8],
-    _first: &FileState,
-    _readback: Option<&[u8]>,
-    _kept_copy: &Path,
+    inputs: &RowInputs<'_>,
+    new_text: &[u8],
+    first: &FileState,
+    readback: Option<&[u8]>,
+    kept_copy: &Path,
 ) -> RowEnd {
-    RowEnd {
-        outcome: Outcome::Skipped,
-        message: String::from("not written yet"),
-        unrecovered: false,
+    let listed = inputs.file().map(|file| file.path).unwrap_or_default();
+    let shown = listed.display();
+    let kept = kept_copy.display();
+    match judge_readback(readback, new_text, &first.bytes) {
+        Readback::Wrapped => RowEnd {
+            outcome: Outcome::Wrapped,
+            message: with_kept_copy_removed(
+                kept_copy,
+                format!(
+                    "Wrapped. Backup: {}. {}",
+                    backup_path(&listed).display(),
+                    restart_step(inputs.id)
+                ),
+            ),
+            unrecovered: false,
+        },
+        Readback::Original => RowEnd {
+            outcome: Outcome::Failed,
+            message: with_kept_copy_removed(
+                kept_copy,
+                format!("The app could not replace {shown}, so the file is as it was."),
+            ),
+            unrecovered: false,
+        },
+        Readback::Unrecovered => RowEnd {
+            outcome: Outcome::Failed,
+            message: match readback {
+                None => format!(
+                    "The app cannot read {shown} after its write. Its original is in {kept}. Scan again."
+                ),
+                Some(_) => format!(
+                    "{shown} changed after the app wrote it, so the app left it as it is. Its original is in {kept}. Scan again."
+                ),
+            },
+            unrecovered: true,
+        },
     }
 }
 
-pub fn open_temp(_path: &Path, _gid: u32) -> io::Result<File> {
-    Err(io::Error::other("not written yet"))
+/// A temp file that could not take the group of the file it replaces.
+#[derive(Debug)]
+struct GroupRefused(io::Error);
+
+impl fmt::Display for GroupRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cannot set the group: {}", self.0)
+    }
+}
+
+impl std::error::Error for GroupRefused {}
+
+fn is_group_refusal(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<GroupRefused>())
+}
+
+fn write_failure(error: &io::Error, listed: &Path, target: &Path) -> String {
+    if is_group_refusal(error) {
+        format!(
+            "The app cannot give the new file the group of {}, so it left the file as it was.",
+            listed.display()
+        )
+    } else {
+        format!(
+            "Cannot write {}: {error}. The app left {} as it was.",
+            target.display(),
+            listed.display()
+        )
+    }
+}
+
+/// Opens a new temp file with mode 0600 before its first byte, so no other user can read a copy
+/// of a `0600` file. `create_new` refuses a name that exists, which also stops a write through a
+/// link. The group of the file it replaces comes right after the open, because a new file takes
+/// the folder's or the process's group, and members of that group could read a `0640` file.
+pub fn open_temp(path: &Path, gid: u32) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(OWNER_ONLY)
+        .open(path)?;
+    if let Err(error) = std::os::unix::fs::fchown(&file, None, Some(gid)) {
+        let _ = fs::remove_file(path);
+        return Err(io::Error::new(error.kind(), GroupRefused(error)));
+    }
+    Ok(file)
+}
+
+/// Writes and syncs a temp file, then gives it the mode of the file it replaces. On any error
+/// the temp file goes.
+fn write_temp(path: &Path, bytes: &[u8], gid: u32, mode: u32) -> io::Result<()> {
+    let mut file = open_temp(path, gid)?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| file.set_permissions(fs::Permissions::from_mode(mode)));
+    if written.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    written
+}
+
+/// `<file>.bak-guardrail` beside the listed path, as step 6.1 names it. The rename replaces a
+/// link at that name and never writes through it.
+fn write_backup(listed: &Path, first: &FileState) -> io::Result<()> {
+    let backup = backup_path(listed);
+    let temp = suffixed(&backup, &format!(".{}.tmp", std::process::id()));
+    write_temp(&temp, &first.bytes, first.gid, first.mode)?;
+    fs::rename(&temp, &backup).inspect_err(|_| {
+        let _ = fs::remove_file(&temp);
+    })
+}
+
+/// The original under a name that no later backup write reaches, kept until a read confirms
+/// the row's end. `create_new` fails when any file or link has the name.
+fn create_kept_copy(
+    listed: &Path,
+    bytes: &[u8],
+    unix_secs: u64,
+) -> Result<PathBuf, (PathBuf, io::Error)> {
+    let kept = suffixed(listed, &format!("{BACKUP_SUFFIX}-{unix_secs}"));
+    let mut file = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(OWNER_ONLY)
+        .open(&kept)
+    {
+        Ok(file) => file,
+        Err(error) => return Err((kept, error)),
+    };
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        let _ = fs::remove_file(&kept);
+        return Err((kept, error));
+    }
+    Ok(kept)
+}
+
+pub fn run_rows(
+    _env: &HostEnv,
+    _rows: &[ServerId],
+    _row: &mut dyn FnMut(&ServerId, &mut Option<PathBuf>) -> RowEnd,
+) -> Vec<WrapResult> {
+    Vec::new()
 }
 
 /// The PATH that the login shell printed, or the app's own PATH with a note.
@@ -231,10 +944,6 @@ pub fn login_path(_env: &HostEnv) -> LoginPath {
         path: None,
         note: None,
     }
-}
-
-pub fn find_binary(_env: &HostEnv, _path: Option<&OsStr>) -> Option<PathBuf> {
-    None
 }
 
 /// One output stream of a child: the whole text, or why the app kept none.

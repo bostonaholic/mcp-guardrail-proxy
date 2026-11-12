@@ -9,7 +9,7 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 - The Sessions table's Last seen column in the desktop app now shows the date as well as the time.
 ### Added
 
-- A Servers tab in the desktop app's Settings window. It lists each MCP server in your client config files that the proxy does not wrap, with its client, scope, status, and reason, and counts the servers that are wrapped.
+- A Servers tab in the desktop app's Settings window. It lists each MCP server in your client config files that the proxy does not wrap, with its client, scope, status, and reason, and counts the servers that are wrapped. Select rows and press Wrap to wrap them in the proxy. Each wrap writes a backup and a kept copy of the file first, and changes only `command` and `args`.
 
 ## 0.3.1 - 2026-11-10
 

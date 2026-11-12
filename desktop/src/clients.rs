@@ -4,10 +4,13 @@
 // IMPLEMENT replaces each body and removes this allow.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 const PROXY_BINARY: &str = "mcp-guardrail-proxy";
@@ -101,6 +104,20 @@ pub enum Status {
     Unreadable,
 }
 
+impl Status {
+    /// The status as the tab shows it, the same text as its serde name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Status::AlreadyWrapped => "already wrapped",
+            Status::Remote => "remote",
+            Status::Disabled => "disabled",
+            Status::Malformed => "malformed",
+            Status::Wrappable => "wrappable",
+            Status::Unreadable => "unreadable",
+        }
+    }
+}
+
 /// Where a client file keeps its servers (`INSTALL.md` client reference).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
@@ -127,6 +144,16 @@ impl ClientFile {
             Layout::ClaudeJson => ClientId::ClaudeCodeUser,
             Layout::CodexToml => ClientId::Codex,
             Layout::Json { client, .. } => client,
+        }
+    }
+
+    fn serves(&self, client: ClientId) -> bool {
+        match self.layout {
+            Layout::ClaudeJson => {
+                matches!(client, ClientId::ClaudeCodeUser | ClientId::ClaudeCodeLocal)
+            }
+            Layout::CodexToml => client == ClientId::Codex,
+            Layout::Json { client: owner, .. } => owner == client,
         }
     }
 }
@@ -169,6 +196,13 @@ pub fn client_files(platform: Platform, home: &Path) -> Vec<ClientFile> {
         json(".gemini/settings.json", ClientId::GeminiCli, "mcpServers"),
     ]);
     files
+}
+
+/// The table file of `client`, or `None` when this platform's table has no such client.
+pub fn client_file(platform: Platform, home: &Path, client: ClientId) -> Option<ClientFile> {
+    client_files(platform, home)
+        .into_iter()
+        .find(|file| file.serves(client))
 }
 
 /// One row of the Servers tab.
@@ -515,6 +549,38 @@ fn classify(entry: &Value, project_exists: bool) -> (Status, Option<String>) {
     }
 }
 
+/// What a fresh read of a client file holds for one requested server.
+pub enum Found {
+    /// The file does not parse, or its server key holds no table. The text names only a key or
+    /// a place in the file.
+    NotParsed(String),
+    Missing,
+    Entry {
+        status: Status,
+        value: Value,
+    },
+}
+
+/// The entry of `id` in `text`, classified as the scan classifies it.
+pub fn find_entry(
+    file: &ClientFile,
+    text: &str,
+    id: &ServerId,
+    folder_exists: &dyn Fn(&Path) -> bool,
+) -> Found {
+    let entries = match entries_of(file, text, folder_exists) {
+        Ok(entries) => entries,
+        Err(reason) => return Found::NotParsed(reason),
+    };
+    match entries.into_iter().find(|entry| entry.id == *id) {
+        None => Found::Missing,
+        Some(entry) => Found::Entry {
+            status: classify(&entry.value, entry.project_exists).0,
+            value: entry.value,
+        },
+    }
+}
+
 /// The file text with one entry wrapped, and the step 5.3 notes that the wrap gave the row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewText {
@@ -522,22 +588,215 @@ pub struct NewText {
     pub notes: Vec<String>,
 }
 
+/// Why the app cannot build the new text. The reason names keys, never values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditError {
     pub reason: String,
 }
 
-pub fn checked_new_text(
-    _file: &ClientFile,
-    _text: &str,
-    _name: &str,
-    _bin: &str,
-    _audit_log: &str,
-    _lookup: &dyn Fn(&str) -> Option<PathBuf>,
-) -> Result<NewText, EditError> {
-    Err(EditError {
-        reason: String::from("not written yet"),
+fn edit_error(reason: &str) -> EditError {
+    EditError {
+        reason: reason.to_string(),
+    }
+}
+
+/// The upstream command of `INSTALL.md:118-122`, with the notes of `INSTALL.md:118-127`.
+fn upstream_command(
+    entry: &Value,
+    command: &str,
+    lookup: &dyn Fn(&str) -> Option<PathBuf>,
+) -> (String, Vec<String>) {
+    let mut notes = Vec::new();
+    let upstream = if !command.contains('/') {
+        let entry_sets_path = entry
+            .get("env")
+            .and_then(Value::as_object)
+            .is_some_and(|env| env.contains_key("PATH"));
+        let found = lookup(command)
+            .and_then(|path| path.to_str().map(str::to_string))
+            .filter(|path| path.starts_with('/'));
+        match found {
+            _ if entry_sets_path => {
+                notes.push("uses the entry's PATH".to_string());
+                command.to_string()
+            }
+            Some(path) => path,
+            None => {
+                notes.push("not found on PATH".to_string());
+                command.to_string()
+            }
+        }
+    } else if !command.starts_with('/') {
+        match entry.get("cwd").and_then(Value::as_str) {
+            Some(cwd) if cwd.starts_with('/') => {
+                format!("{}/{command}", cwd.trim_end_matches('/'))
+            }
+            _ => {
+                notes.push("relative command".to_string());
+                command.to_string()
+            }
+        }
+    } else {
+        command.to_string()
+    };
+    let names_proxy = string_list(entry.get("args"))
+        .is_some_and(|args| args.iter().any(|arg| is_proxy_command(arg)));
+    if names_proxy {
+        notes.push("an arg names mcp-guardrail-proxy".to_string());
+    }
+    (upstream, notes)
+}
+
+/// The `args` of the step 6 entry (`INSTALL.md:146-155`).
+fn wrapped_args(audit_log: &str, upstream: String, old_args: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "proxy".to_string(),
+        "--audit-log".to_string(),
+        audit_log.to_string(),
+        "--".to_string(),
+        upstream,
+    ];
+    args.extend(old_args.iter().map(|arg| arg.to_string()));
+    args
+}
+
+/// The step 6 `command` and `args` of an entry, and the notes they gave.
+struct Wrap {
+    args: Vec<String>,
+    notes: Vec<String>,
+}
+
+fn wrap_of(
+    entry: &Value,
+    audit_log: &str,
+    lookup: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<Wrap, EditError> {
+    let command = entry
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| edit_error("the entry has no command string"))?;
+    let old_args = match entry.get("args") {
+        None => Vec::new(),
+        Some(_) => string_list(entry.get("args"))
+            .ok_or_else(|| edit_error("the entry's args is not a list of strings"))?,
+    };
+    let (upstream, notes) = upstream_command(entry, command, lookup);
+    Ok(Wrap {
+        args: wrapped_args(audit_log, upstream, &old_args),
+        notes,
     })
+}
+
+/// The new text of `file` with the entry `name` wrapped, parsed and classified in memory. A
+/// failure here comes before any write.
+pub fn checked_new_text(
+    file: &ClientFile,
+    text: &str,
+    name: &str,
+    bin: &str,
+    audit_log: &str,
+    lookup: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<NewText, EditError> {
+    let id = ServerId {
+        client: file.file_client(),
+        project: None,
+        name: name.to_string(),
+    };
+    let entry = match find_entry(file, text, &id, &|_| true) {
+        Found::Entry { value, .. } => value,
+        Found::Missing => return Err(edit_error("the entry is not in the file")),
+        Found::NotParsed(reason) => return Err(EditError { reason }),
+    };
+    let wrap = wrap_of(&entry, audit_log, lookup)?;
+    let new_text = match file.layout {
+        Layout::Json { key, .. } => splice_json(text, key, name, bin, &wrap.args)?,
+        Layout::CodexToml => return Err(edit_error("the app cannot edit config.toml yet")),
+        Layout::ClaudeJson => {
+            return Err(edit_error(
+                "~/.claude.json changes only through the claude command",
+            ));
+        }
+    };
+    match find_entry(file, &new_text, &id, &|_| true) {
+        Found::Entry {
+            status: Status::AlreadyWrapped,
+            ..
+        } => Ok(NewText {
+            text: new_text,
+            notes: wrap.notes,
+        }),
+        _ => Err(edit_error(
+            "the new text does not hold the entry in its wrapped form",
+        )),
+    }
+}
+
+/// Values by key, each a slice of the text that was parsed.
+type RawMap<'a> = BTreeMap<String, &'a RawValue>;
+
+fn raw_map<'a>(json: &'a str, what: &str) -> Result<RawMap<'a>, EditError> {
+    serde_json::from_str(json).map_err(|_| edit_error(&format!("{what} is not a JSON object")))
+}
+
+/// The byte range of `raw` in `text`. `raw` borrows from `text`, so its offset is the distance
+/// between the two pointers. A range outside `text` is an error, never a panic.
+fn span_in(text: &str, raw: &RawValue) -> Result<Range<usize>, EditError> {
+    let value = raw.get();
+    let start = (value.as_ptr() as usize)
+        .checked_sub(text.as_ptr() as usize)
+        .ok_or_else(|| edit_error("a value lies outside the file text"))?;
+    let range = start..start + value.len();
+    match text.get(range.clone()) {
+        Some(found) if found == value => Ok(range),
+        _ => Err(edit_error("a value lies outside the file text")),
+    }
+}
+
+/// Replaces the `command` and `args` values of one entry and keeps every other byte. With no
+/// `args`, one `args` member goes right after the `command` value.
+fn splice_json(
+    text: &str,
+    key: &str,
+    name: &str,
+    bin: &str,
+    args: &[String],
+) -> Result<String, EditError> {
+    let top = raw_map(text, "the file")?;
+    let servers = top
+        .get(key)
+        .ok_or_else(|| edit_error(&format!("the file has no {key} key")))?;
+    let servers = raw_map(servers.get(), &format!("the {key} key"))?;
+    let entry = servers
+        .get(name)
+        .ok_or_else(|| edit_error("the entry is not in the file"))?;
+    let entry = raw_map(entry.get(), "the entry")?;
+    let command = entry
+        .get("command")
+        .ok_or_else(|| edit_error("the entry has no command"))?;
+    let command = span_in(text, command)?;
+    let bin = serde_json::to_string(bin).map_err(|_| edit_error("the binary path"))?;
+    let args_json = serde_json::to_string(args).map_err(|_| edit_error("the new args"))?;
+    let mut edits = vec![(command.clone(), bin)];
+    match entry.get("args") {
+        Some(old_args) => edits.push((span_in(text, old_args)?, args_json)),
+        None => edits.push((command.end..command.end, format!(",\"args\":{args_json}"))),
+    }
+    edits.sort_by_key(|(range, _)| range.start);
+    let mut spliced = String::with_capacity(text.len() + 256);
+    let mut copied = 0;
+    for (range, replacement) in edits {
+        spliced.push_str(
+            text.get(copied..range.start)
+                .ok_or_else(|| edit_error("the command and args values overlap"))?,
+        );
+        spliced.push_str(&replacement);
+        copied = range.end;
+    }
+    spliced.push_str(
+        text.get(copied..)
+            .ok_or_else(|| edit_error("a value lies outside the file text"))?,
+    );
+    Ok(spliced)
 }
 
 /// A file as one open read saw it. `mode` holds the permission bits only.
@@ -549,19 +808,67 @@ pub struct FileState {
     pub gid: u32,
 }
 
+/// What the read after the rename shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readback {
+    /// The file holds the new text.
+    Wrapped,
+    /// The file holds the first read.
+    Original,
+    /// The read failed, or the file holds other bytes, which another program wrote.
+    Unrecovered,
+}
+
+pub fn judge_readback(read: Option<&[u8]>, new_text: &[u8], first: &[u8]) -> Readback {
+    match read {
+        Some(bytes) if bytes == new_text => Readback::Wrapped,
+        Some(bytes) if bytes == first => Readback::Original,
+        _ => Readback::Unrecovered,
+    }
+}
+
+/// The restart step of the client reference (`INSTALL.md:241-249`) after a wrap.
+pub fn restart_step(id: &ServerId) -> String {
+    let label = id.client.label();
+    match (id.client, &id.project) {
+        (ClientId::ClaudeCodeLocal, Some(project)) => {
+            format!("Start a new {label} session in {project}.")
+        }
+        (ClientId::ClaudeCodeUser | ClientId::ClaudeCodeLocal | ClientId::Codex, _)
+        | (ClientId::GeminiCli, _) => format!("Start a new {label} session."),
+        _ => format!("Quit and reopen {label}."),
+    }
+}
+
 pub fn holds(_stored: &Value, _expected: &Value) -> Result<(), Vec<String>> {
     Err(Vec::new())
 }
 
 /// Why one row gets no checkbox. `Display` is the window text.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RowBlocker {
-    text: String,
+pub enum RowBlocker {
+    NotYet(ClientId),
 }
 
 impl fmt::Display for RowBlocker {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.text)
+        match self {
+            RowBlocker::NotYet(client) => write!(
+                formatter,
+                "The app cannot wrap {} servers yet. The install steps in INSTALL.md wrap them.",
+                client.label()
+            ),
+        }
+    }
+}
+
+/// The blocker of a row that the app has no writer for.
+pub fn writer_blocker(client: ClientId) -> Option<RowBlocker> {
+    match client {
+        ClientId::ClaudeCodeUser | ClientId::ClaudeCodeLocal | ClientId::Codex => {
+            Some(RowBlocker::NotYet(client))
+        }
+        _ => None,
     }
 }
 

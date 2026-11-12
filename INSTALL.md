@@ -252,7 +252,7 @@ To undo a row, use [Undo](#undo).
 
 ## Undo
 
-Undo needs no earlier backup. It rebuilds each original entry from its wrapped entry, so it works for a row wired in any pass, and it keeps edits made after the wiring. When the request names a client or a server, undo only those rows. A request that names the change needs no approval table.
+Undo needs no earlier backup. It rebuilds each original entry from its wrapped entry, so it works for a row wired in any pass, and it keeps edits made after the wiring. It also covers rows that the desktop app's Servers tab wrapped, because the app writes the same entry as step 6. When the request names a client or a server, undo only those rows. A request that names the change needs no approval table.
 
 Undo uses these values. `<file>` is the full path of the row's config file. `<name>` is a server name. `<record>` is the full path of `~/.local/state/mcp-guardrail/plugin-moves.json`, and each of its keys has the form `<plugin>@<marketplace>`. Undo needs no `<BIN>` and no `<AUDIT>`, because each rebuilt entry holds neither.
 
@@ -297,7 +297,7 @@ Policy files from an earlier version still load, because the policy format does 
 
 - `~/Applications/MCP Guardrail.app`
 - `~/.local/state/mcp-guardrail/`, which holds the audit log and `plugin-moves.json`
-- each `<file>.bak-guardrail`
+- each `<file>.bak-guardrail`. Uninstall names each `<file>.bak-guardrail-<T>` kept copy and leaves it.
 - the binary, at the cargo path of step 3 or at `~/.local/bin/mcp-guardrail-proxy`
 
 The user owns the removal of `~/.local/share/mcp-guardrail/src`, because a clone can hold their own work.
@@ -333,5 +333,5 @@ Uninstall uses one value, `<file>`, the full path of a config file. It needs no 
    rm -rf "$HOME/.local/state/mcp-guardrail"
    ```
 
-8. For each config file in the client reference for this platform, and for `~/.claude/settings.json`, remove `<file>.bak-guardrail` if it exists. Use `command rm -f -- '<file>.bak-guardrail'`, with `<file>` as the full path of the config file.
+8. For each config file in the client reference for this platform, and for `~/.claude/settings.json`, remove `<file>.bak-guardrail` if it exists. Use `command rm -f -- '<file>.bak-guardrail'`, with `<file>` as the full path of the config file. Then list each `<file>.bak-guardrail-<T>` beside that file, where `<T>` is a number. Name each one in the report and leave it, because it can hold a server that a failed write removed.
 9. Run `cargo uninstall tauri-cli` only when the user's request names `tauri-cli`.

@@ -61,20 +61,24 @@
     </section>
     <section id="panel-servers" class="panel" role="tabpanel" aria-labelledby="tab-servers" hidden>
       <p id="servers-summary"></p>
+      <p class="muted note">Binary: <span id="servers-binary"></span></p>
+      <p class="muted note">Audit log: <span id="servers-audit-log"></span></p>
       <ul id="servers-notes" class="muted note"></ul>
       <p id="servers-problem" class="banner" hidden></p>
       <p id="servers-empty" class="muted" hidden></p>
       <div class="servers-table">
         <table>
           <thead>
-            <tr><th>Client</th><th>Scope</th><th>Server</th><th>Status</th><th>Reason</th></tr>
+            <tr><th>Wrap</th><th>Client</th><th>Scope</th><th>Server</th><th>Status</th><th>Reason</th></tr>
           </thead>
           <tbody id="servers-rows"></tbody>
         </table>
       </div>
       <div class="actions">
+        <button type="button" id="servers-wrap" disabled>Wrap</button>
         <button type="button" id="servers-scan">Scan again</button>
       </div>
+      <ul id="servers-results"></ul>
     </section>
     <script src="settings.js"></script>
   </body>

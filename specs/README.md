@@ -61,6 +61,9 @@ Each spec has a `*Broken.tla` variant that must fail, which proves the check can
 | The probe handshake, `run_probe` in `src/probe.rs` | A fixed sequence of three writes and two waits under one deadline. Each wait keeps only the id it awaits. Following `tools/list` pagination or answering server requests would carry state between events, and either change needs a machine. |
 | `latest` in `desktop/ui/app.js` | Empty until the first snapshot, then the last snapshot. |
 | The Servers tab's last scan in `desktop/ui/settings.js` | Empty until the first scan, then the last scan, like `latest`. |
+| `wrap_row` in `desktop/src/servers.rs` | A fixed sequence of steps per row. It keeps only the bytes it read at the start and the kept copy path, and nothing after it returns, like the probe handshake. |
+| The wrap lock in `desktop/src/servers.rs` | One `Mutex` for the length of one wrap. A second wrap fails at once and changes nothing. A poisoned lock counts as free, because it guards no data. |
+| Kept copies on disk, `<file>.bak-guardrail-<T>` | No later wrap reads them. A name that exists only fails the `create_new` of a new kept copy, and that row fails before its change. |
 | `Monitor` in `desktop/src/monitor.rs` | Its own state is the watched path and the notifications switch. A message compares one path with it once, like `latest`, and replaces the switch. The switch gates whole polls and keeps no record of dropped alerts. `TailCursor` and `Watch` keep the event-order rules under their own specs. |
 | `SettingsStore` in `desktop/src/settings.rs` | It holds the last saved values and the problem from the launch load, which the next save clears. Each save replaces the values, and no rule reads the order of earlier events. |
 | Window shown or hidden, notification permission | Held by Tauri and the OS, not by this code. |
