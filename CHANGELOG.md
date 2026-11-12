@@ -11,6 +11,10 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 - A Servers tab in the desktop app's Settings window. It lists each MCP server in your client config files that the proxy does not wrap, with its client, scope, status, and reason, and counts the servers that are wrapped. Select rows and press Wrap to wrap them in the proxy. It wraps Claude Desktop, Cursor, VS Code, Windsurf, Gemini CLI, Codex, and Claude Code servers. Claude Code rows change only through the `claude` command. Each wrap writes a backup and a kept copy of the file first, and changes only `command` and `args`.
 
+### Changed
+
+- The `INSTALL.md` final report now lists each server that the install left unwrapped, with its status, note, or failure, and names the desktop app's Servers tab on macOS. When a step 6 rollback fails, the agent keeps a copy of the backup that no later row replaces, and writes no more rows to that file.
+
 ## 0.3.1 - 2026-11-10
 
 ### Fixed
