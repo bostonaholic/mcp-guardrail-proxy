@@ -108,6 +108,8 @@ The app cannot wrap a file whose group you are not in, because the new file must
 
 After a wrap, restart the client, as the client reference in `INSTALL.md` says: quit and reopen Claude Desktop, Cursor, VS Code, or Windsurf, or start a new Gemini CLI session. The app does not probe the wrapped server. To undo a wrap, use [Undo](../INSTALL.md#undo) in `INSTALL.md`.
 
+When a row ends in a state that no read confirms, the app skips each later row of that file in the same wrap, with "Not wrapped: an earlier row could not confirm <file>. Read the result of that row." Rows of other files still run. A row that fails before its change, or whose end a read confirms, stops no later row. When the app stops a row on an internal error, the result says so and names the kept copy, or says that the app made no change. That row's file also stops for the rest of the wrap.
+
 The kept copy holds your `env` values, with mode 0600. The app removes it when a read confirms the end of the row. A result that names a kept copy means the copy stays until you remove it.
 
 ### Restore a server

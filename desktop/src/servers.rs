@@ -4,6 +4,7 @@
 // IMPLEMENT replaces each body and removes this allow.
 #![allow(dead_code)]
 
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -12,6 +13,7 @@ use std::io::{Seek, SeekFrom};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, TryLockError};
@@ -537,28 +539,17 @@ pub fn wrap_request(
     let ready = ready(env, login).map_err(|refusal| refusal.to_string())?;
     check_policy(&ready.bin, login).map_err(|refusal| refusal.to_string())?;
     prepare_audit_log(&env.audit_log_path).map_err(|refusal| refusal.to_string())?;
-    let results: Vec<WrapResult> = rows
-        .iter()
-        .map(|id| {
-            let inputs = RowInputs {
-                env,
-                id,
-                bin: &ready.bin,
-                audit_log: &ready.audit_log,
-                login_path: login,
-                unix_secs,
-            };
-            let mut kept_copy = None;
-            let result = row_result(id, wrap_row(&inputs, &mut kept_copy));
-            if result.outcome == Outcome::Failed {
-                eprintln!(
-                    "{LOG_PREFIX} wrap failed: {} {}: {}",
-                    result.client, result.server, result.message
-                );
-            }
-            result
-        })
-        .collect();
+    let results = run_rows(env, rows, &mut |id, kept_copy| {
+        let inputs = RowInputs {
+            env,
+            id,
+            bin: &ready.bin,
+            audit_log: &ready.audit_log,
+            login_path: login,
+            unix_secs,
+        };
+        wrap_row(&inputs, kept_copy)
+    });
     log_summary(&results, started.elapsed());
     Ok(WrapReport { results })
 }
@@ -965,12 +956,71 @@ fn create_kept_copy(
     Ok(kept)
 }
 
+/// Runs each row in request order. An end that no read confirmed, a panic included, stops the
+/// later rows of that real file for this call, so no later row writes over an original that
+/// only the kept copy holds. Rows of other files still run.
 pub fn run_rows(
-    _env: &HostEnv,
-    _rows: &[ServerId],
-    _row: &mut dyn FnMut(&ServerId, &mut Option<PathBuf>) -> RowEnd,
+    env: &HostEnv,
+    rows: &[ServerId],
+    row: &mut dyn FnMut(&ServerId, &mut Option<PathBuf>) -> RowEnd,
 ) -> Vec<WrapResult> {
-    Vec::new()
+    let mut stopped: HashSet<PathBuf> = HashSet::new();
+    let mut results = Vec::with_capacity(rows.len());
+    for id in rows {
+        let listed = client_file(env.platform, &env.home, id.client).map(|file| file.path);
+        let real = listed.as_deref().map(real_path);
+        let end = match &real {
+            Some(real) if stopped.contains(real) => skipped(format!(
+                "Not wrapped: an earlier row could not confirm {}. Read the result of that row.",
+                real.display()
+            )),
+            _ => {
+                let mut kept_copy = None;
+                // The closure borrows only the row function and the kept copy slot, and the
+                // slot is read only to name the copy, so a half-done row cannot be observed.
+                let ran = panic::catch_unwind(AssertUnwindSafe(|| row(id, &mut kept_copy)));
+                let end = ran
+                    .unwrap_or_else(|_| panicked_end(id, listed.as_deref(), kept_copy.as_deref()));
+                if end.unrecovered
+                    && let Some(real) = &real
+                {
+                    stopped.insert(real.clone());
+                }
+                end
+            }
+        };
+        let result = row_result(id, end);
+        if result.outcome == Outcome::Failed {
+            eprintln!(
+                "{LOG_PREFIX} wrap failed: {} {}: {}",
+                result.client, result.server, result.message
+            );
+        }
+        results.push(result);
+    }
+    results
+}
+
+/// A row that panicked. The message never holds the panic text, which can quote config text.
+fn panicked_end(id: &ServerId, listed: Option<&Path>, kept_copy: Option<&Path>) -> RowEnd {
+    let file = listed.map_or_else(
+        || format!("the {} config", id.client.label()),
+        |listed| listed.display().to_string(),
+    );
+    let message = match kept_copy {
+        Some(kept) => format!(
+            "The app stopped this row on an internal error. {file} may have changed. Its original is in {}. See Restore a server in desktop/README.md.",
+            kept.display()
+        ),
+        None => {
+            format!("The app stopped this row on an internal error and made no change to {file}.")
+        }
+    };
+    RowEnd {
+        outcome: Outcome::Failed,
+        message,
+        unrecovered: true,
+    }
 }
 
 /// The PATH that the login shell printed, or the app's own PATH with a note.
