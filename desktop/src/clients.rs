@@ -254,6 +254,16 @@ struct Entry {
 /// Classifies every entry of one file. A file that does not parse, or whose server key holds
 /// no table, gives one `malformed` row whose reason quotes no file text.
 pub fn scan_text(file: &ClientFile, text: &str, folder_exists: &dyn Fn(&Path) -> bool) -> FileScan {
+    scan_text_with(file, text, folder_exists, &|_, _| None)
+}
+
+/// `scan_text`, where `blocker` can take the checkbox from a `wrappable` row, with its reason.
+pub fn scan_text_with(
+    file: &ClientFile,
+    text: &str,
+    folder_exists: &dyn Fn(&Path) -> bool,
+    blocker: &dyn Fn(&ServerId, &Value) -> Option<RowBlocker>,
+) -> FileScan {
     let entries = match entries_of(file, text, folder_exists) {
         Ok(entries) => entries,
         Err(reason) => {
@@ -270,6 +280,12 @@ pub fn scan_text(file: &ClientFile, text: &str, folder_exists: &dyn Fn(&Path) ->
             scan.wrapped += 1;
             continue;
         }
+        let blocked = match status {
+            Status::Wrappable => blocker(&entry.id, &entry.value),
+            _ => None,
+        };
+        let selectable = status == Status::Wrappable && blocked.is_none();
+        let reason = blocked.map(|blocked| blocked.to_string()).or(note);
         let scope = match &entry.id.project {
             Some(project) => format!("local: {project}"),
             None => USER_SCOPE.to_string(),
@@ -280,8 +296,8 @@ pub fn scan_text(file: &ClientFile, text: &str, folder_exists: &dyn Fn(&Path) ->
             file: file.path.display().to_string(),
             server: entry.id.name.clone(),
             status,
-            reason: note,
-            selectable: false,
+            reason,
+            selectable,
             id: entry.id,
         });
     }
@@ -840,14 +856,53 @@ pub fn restart_step(id: &ServerId) -> String {
     }
 }
 
-pub fn holds(_stored: &Value, _expected: &Value) -> Result<(), Vec<String>> {
-    Err(Vec::new())
+/// The top-level keys of `expected` that `stored` lacks or holds with another value, never a
+/// value. A stored entry can have more keys, because nothing records which keys `claude` adds.
+pub fn holds(stored: &Value, expected: &Value) -> Result<(), Vec<String>> {
+    let differ: Vec<String> = expected
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(key, value)| stored.get(key.as_str()) != Some(*value))
+        .map(|(key, _)| key.clone())
+        .collect();
+    if differ.is_empty() {
+        Ok(())
+    } else {
+        Err(differ)
+    }
 }
+
+/// The Claude Code entry that `claude mcp add-json` gets: the original with the step 6
+/// `command` and `args`, and every other key kept.
+pub fn wrapped_entry(
+    entry: &Value,
+    bin: &str,
+    audit_log: &str,
+    lookup: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<(Value, Vec<String>), EditError> {
+    let wrap = wrap_of(entry, audit_log, lookup)?;
+    let mut wrapped = entry.clone();
+    let fields = wrapped
+        .as_object_mut()
+        .ok_or_else(|| edit_error("the entry is not an object"))?;
+    fields.insert("command".to_string(), Value::from(bin));
+    fields.insert("args".to_string(), Value::from(wrap.args));
+    Ok((wrapped, wrap.notes))
+}
+
+/// The longest JSON text that the app passes to `claude` as one argument. Linux limits one
+/// argument to 128 KiB, and macOS limits the argument list and the environment together, so
+/// this cap leaves room for the rest. The add-back sends the original, so both texts must fit.
+pub const MAX_ADD_JSON_BYTES: usize = 65_536;
 
 /// Why one row gets no checkbox. `Display` is the window text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowBlocker {
     NotYet(ClientId),
+    NameRefused,
+    NoClaude,
+    TooLong,
 }
 
 impl fmt::Display for RowBlocker {
@@ -858,6 +913,14 @@ impl fmt::Display for RowBlocker {
                 "The app cannot wrap {} servers yet. The install steps in INSTALL.md wrap them.",
                 client.label()
             ),
+            RowBlocker::NameRefused => formatter.write_str(
+                "The name is empty or starts with -, so claude cannot take it as a server name.",
+            ),
+            RowBlocker::NoClaude => formatter.write_str(
+                "Cannot find claude on your PATH, so the app cannot wrap Claude Code servers.",
+            ),
+            RowBlocker::TooLong => formatter
+                .write_str("The entry is over 64 KiB, too long for the app to pass to claude."),
         }
     }
 }
@@ -865,21 +928,37 @@ impl fmt::Display for RowBlocker {
 /// The blocker of a row that the app has no writer for.
 pub fn writer_blocker(client: ClientId) -> Option<RowBlocker> {
     match client {
-        ClientId::ClaudeCodeUser | ClientId::ClaudeCodeLocal | ClientId::Codex => {
-            Some(RowBlocker::NotYet(client))
-        }
+        ClientId::Codex => Some(RowBlocker::NotYet(client)),
         _ => None,
     }
 }
 
+fn json_len(value: &Value) -> usize {
+    serde_json::to_string(value).map_or(usize::MAX, |text| text.len())
+}
+
+/// Why `claude` cannot take a Claude Code row, or the app could not add it back. `claude`
+/// reads a name that starts with `-` as an option.
 pub fn claude_code_blocker(
-    _name: &str,
-    _entry: &Value,
-    _bin: &str,
-    _audit_log: &str,
-    _lookup: &dyn Fn(&str) -> Option<PathBuf>,
+    name: &str,
+    entry: &Value,
+    bin: &str,
+    audit_log: &str,
+    lookup: &dyn Fn(&str) -> Option<PathBuf>,
 ) -> Option<RowBlocker> {
-    None
+    if name.is_empty() || name.starts_with('-') {
+        return Some(RowBlocker::NameRefused);
+    }
+    if lookup("claude").is_none() {
+        return Some(RowBlocker::NoClaude);
+    }
+    let too_long = match wrapped_entry(entry, bin, audit_log, lookup) {
+        Ok((wrapped, _)) => {
+            json_len(&wrapped) > MAX_ADD_JSON_BYTES || json_len(entry) > MAX_ADD_JSON_BYTES
+        }
+        Err(_) => json_len(entry) > MAX_ADD_JSON_BYTES,
+    };
+    too_long.then_some(RowBlocker::TooLong)
 }
 
 pub fn hidden_forms(_entry: &Value) -> Vec<Vec<u8>> {

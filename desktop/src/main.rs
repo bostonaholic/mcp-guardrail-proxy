@@ -3,7 +3,8 @@
 //! tab. It writes its own settings files and, when it installs an update, the new version of
 //! itself. A Wrap press on the Servers tab also writes client config files, their backups, and
 //! kept copies, and creates the audit log's folder and file. The Servers tab starts your login
-//! shell to read its PATH, and a Wrap press starts `mcp-guardrail-proxy check-policy`. It never
+//! shell to read its PATH, and a Wrap press starts `mcp-guardrail-proxy check-policy` and, for a
+//! Claude Code row, `claude`. It never
 //! talks to a proxy, so it cannot weaken one, and the proxy runs the same without it. Only
 //! `updater.rs` reaches the network.
 

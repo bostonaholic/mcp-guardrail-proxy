@@ -24,9 +24,10 @@ use serde::Serialize;
 
 use crate::clients::{
     ClientFile, ClientId, FileState, Found, Layout, Platform, Readback, ServerId, ServerRow,
-    Status, checked_new_text, client_file, client_files, file_row, find_entry, judge_readback,
-    restart_step, scan_text, shown_line, writer_blocker,
+    Status, checked_new_text, claude_code_blocker, client_file, client_files, file_row, find_entry,
+    holds, judge_readback, restart_step, scan_text_with, shown_line, wrapped_entry, writer_blocker,
 };
+use serde_json::Value;
 
 const PROXY_NAME: &str = "mcp-guardrail-proxy";
 const BUSY: &str = "A wrap is already running.";
@@ -123,13 +124,25 @@ fn read_client_file(path: &Path) -> FileRead {
 
 /// Lists every entry of the client files under `env.home` that is not wrapped.
 pub fn scan(env: &HostEnv) -> ServersView {
+    let login = login_path(env);
+    let path = login.path.as_deref();
+    let ready = ready(env, path);
     let mut view = ServersView {
         wrapped: 0,
         rows: Vec::new(),
-        binary: None,
+        binary: find_binary(env, path).and_then(|bin| bin.to_str().map(str::to_string)),
         audit_log_path: env.audit_log_path.display().to_string(),
-        problem: None,
-        notes: Vec::new(),
+        problem: ready.as_ref().err().map(WrapRefusal::to_string),
+        notes: login.note.into_iter().collect(),
+    };
+    let lookup = |name: &str| find_on_path(name, path);
+    let blocker = |id: &ServerId, entry: &Value| {
+        writer_blocker(id.client).or_else(|| match (id.client, &ready) {
+            (ClientId::ClaudeCodeUser | ClientId::ClaudeCodeLocal, Ok(ready)) => {
+                claude_code_blocker(&id.name, entry, &ready.bin, &ready.audit_log, &lookup)
+            }
+            _ => None,
+        })
     };
     for file in client_files(env.platform, &env.home) {
         let read = read_client_file(&file.path);
@@ -142,31 +155,14 @@ pub fn scan(env: &HostEnv) -> ServersView {
                 view.rows.push(file_row(&file, Status::Unreadable, cause));
             }
             FileRead::Text(text) => {
-                let found = scan_text(&file, &text, &|folder| folder.is_dir());
+                let found = scan_text_with(&file, &text, &|folder| folder.is_dir(), &blocker);
                 view.wrapped += found.wrapped;
                 view.rows.extend(found.rows);
             }
         }
     }
-    let login = login_path(env);
-    view.notes.extend(login.note);
-    let path = login.path.as_deref();
-    view.binary = find_binary(env, path).and_then(|bin| bin.to_str().map(str::to_string));
-    let wrap_on = match ready(env, path) {
-        Ok(_) => true,
-        Err(refusal) => {
-            view.problem = Some(refusal.to_string());
-            false
-        }
-    };
     for row in &mut view.rows {
-        if row.status != Status::Wrappable {
-            continue;
-        }
-        match writer_blocker(row.id.client) {
-            Some(blocker) => row.reason = Some(blocker.to_string()),
-            None => row.selectable = wrap_on,
-        }
+        row.selectable &= ready.is_ok();
     }
     view
 }
@@ -698,7 +694,7 @@ fn wrap_row(inputs: &RowInputs<'_>, kept_copy: &mut Option<PathBuf>) -> RowEnd {
         return skipped(format!("Not wrapped: {blocker}"));
     }
     let real = real_path(&file.path);
-    if is_claude_json(inputs.env, &real) {
+    if file.layout != Layout::ClaudeJson && is_claude_json(inputs.env, &real) {
         return failed_before(
             None,
             format!(
@@ -736,6 +732,20 @@ pub fn wrap_row_from(
             id.client.label()
         ));
     };
+    match file.layout {
+        Layout::ClaudeJson => wrap_claude_row(inputs, &file, first, kept_copy),
+        Layout::CodexToml | Layout::Json { .. } => wrap_file_row(inputs, &file, first, kept_copy),
+    }
+}
+
+/// A JSON or TOML row. The rename is its only write to the file.
+fn wrap_file_row(
+    inputs: &RowInputs<'_>,
+    file: &ClientFile,
+    first: FileState,
+    kept_copy: &mut Option<PathBuf>,
+) -> RowEnd {
+    let id = inputs.id;
     let listed = &file.path;
     let shown = listed.display();
     let real = real_path(listed);
@@ -745,7 +755,7 @@ pub fn wrap_row_from(
             format!("{shown} is not UTF-8 text, so the app left it as it is."),
         );
     };
-    match find_entry(&file, text, id, &|folder| folder.is_dir()) {
+    match find_entry(file, text, id, &|folder| folder.is_dir()) {
         Found::NotParsed(reason) => {
             return skipped(format!("Not wrapped: {shown} {reason}. Scan again."));
         }
@@ -756,7 +766,7 @@ pub fn wrap_row_from(
         Found::Entry { .. } => {}
     }
     let lookup = |name: &str| find_on_path(name, inputs.login_path);
-    let new = match checked_new_text(&file, text, &id.name, inputs.bin, inputs.audit_log, &lookup) {
+    let new = match checked_new_text(file, text, &id.name, inputs.bin, inputs.audit_log, &lookup) {
         Ok(new) => new,
         Err(error) => {
             return failed_before(
@@ -808,6 +818,253 @@ pub fn wrap_row_from(
             .push_str(&format!(" Notes: {}.", new.notes.join(", ")));
     }
     end
+}
+
+pub const CLAUDE_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+const RESTORE_HINT: &str = "See Restore a server in desktop/README.md.";
+
+/// `claude` with an argument vector and no shell, so no shell parses a name or an entry. A
+/// local-scope call runs in the project folder, with `PWD` set to the path as
+/// `~/.claude.json` names it, because `claude` finds the project by that path.
+fn claude_command(
+    claude: &Path,
+    args: &[&str],
+    project: Option<&str>,
+    path: Option<&OsStr>,
+) -> Command {
+    let mut command = Command::new(claude);
+    command
+        .args(args)
+        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    if let Some(project) = project {
+        command.current_dir(project).env("PWD", project);
+    }
+    command
+}
+
+/// What `~/.claude.json` holds for one server after a `claude` call.
+enum Stored {
+    Gone,
+    Entry(Value),
+    /// The file cannot be read or does not parse, so the app cannot tell what `claude` did.
+    Unknown,
+}
+
+fn stored_entry(file: &ClientFile, id: &ServerId) -> Stored {
+    let Ok(bytes) = fs::read(&file.path) else {
+        return Stored::Unknown;
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Stored::Unknown;
+    };
+    match find_entry(file, &text, id, &|folder| folder.is_dir()) {
+        Found::Entry { value, .. } => Stored::Entry(value),
+        Found::Missing => Stored::Gone,
+        Found::NotParsed(_) => Stored::Unknown,
+    }
+}
+
+fn passed(run: &io::Result<ChildRun>) -> bool {
+    matches!(run, Ok(ChildRun { exit: Some(status), .. }) if status.success())
+}
+
+/// How a `claude` call ended, with none of its output.
+fn call_text(call: &str, run: &io::Result<ChildRun>) -> String {
+    match run {
+        Ok(run) => format!(
+            "claude mcp {call} {}",
+            exit_text(run.exit, CLAUDE_CALL_TIMEOUT)
+        ),
+        Err(error) => format!("claude mcp {call} could not start: {error}"),
+    }
+}
+
+fn keys_text(keys: &[String]) -> String {
+    match keys {
+        [key] => format!("key {key} is missing or changed"),
+        _ => format!("keys {} are missing or changed", keys.join(", ")),
+    }
+}
+
+/// An end that no read confirmed. The kept copy stays, and the message names it.
+fn unrecovered(message: String) -> RowEnd {
+    RowEnd {
+        outcome: Outcome::Failed,
+        message,
+        unrecovered: true,
+    }
+}
+
+/// One Claude Code row through `claude mcp remove` and `claude mcp add-json`, the writer of
+/// `INSTALL.md` step 6. The app never writes `~/.claude.json` itself. A call that the app killed
+/// at its timeout can still have made its change, so a read of the file after each call, never
+/// the exit status, decides what comes next.
+fn wrap_claude_row(
+    inputs: &RowInputs<'_>,
+    file: &ClientFile,
+    first: FileState,
+    kept_copy: &mut Option<PathBuf>,
+) -> RowEnd {
+    let id = inputs.id;
+    let name = id.name.as_str();
+    let listed = &file.path;
+    let shown = listed.display();
+    let lookup = |program: &str| find_on_path(program, inputs.login_path);
+    let Ok(text) = std::str::from_utf8(&first.bytes) else {
+        return failed_before(
+            None,
+            format!("{shown} is not UTF-8 text, so the app left it as it is."),
+        );
+    };
+    let original = match find_entry(file, text, id, &|folder| folder.is_dir()) {
+        Found::NotParsed(reason) => {
+            return skipped(format!("Not wrapped: {shown} {reason}. Scan again."));
+        }
+        Found::Missing => return skipped(no_longer_in(name, listed)),
+        Found::Entry { status, .. } if status != Status::Wrappable => {
+            return skipped(format!("Not wrapped: the entry is {} now.", status.name()));
+        }
+        Found::Entry { value, .. } => value,
+    };
+    if let Some(blocker) =
+        claude_code_blocker(name, &original, inputs.bin, inputs.audit_log, &lookup)
+    {
+        return skipped(format!("Not wrapped: {blocker}"));
+    }
+    let (Some(claude), Ok((wrapped, notes))) = (
+        lookup("claude"),
+        wrapped_entry(&original, inputs.bin, inputs.audit_log, &lookup),
+    ) else {
+        return failed_before(
+            None,
+            format!("The app could not build the new entry. It left {shown} as it was."),
+        );
+    };
+    let (Ok(sent), Ok(original_text)) = (
+        serde_json::to_string(&wrapped),
+        serde_json::to_string(&original),
+    ) else {
+        return failed_before(
+            None,
+            format!("The app could not build the new entry. It left {shown} as it was."),
+        );
+    };
+    if let Err(error) = write_backup(listed, &first) {
+        return failed_before(None, write_failure(&error, listed, &backup_path(listed)));
+    }
+    let kept = match create_kept_copy(listed, &first.bytes, inputs.unix_secs) {
+        Ok(kept) => kept,
+        Err((kept, error)) => {
+            return failed_before(
+                None,
+                format!(
+                    "Cannot create the kept copy {}: {error}. The app left {shown} as it was.",
+                    kept.display()
+                ),
+            );
+        }
+    };
+    *kept_copy = Some(kept.clone());
+    let saved = kept.display();
+    // Equality, not `holds`: an entry with one more key, such as a new `env` key, holds the
+    // first read, and the remove would then delete that key.
+    if !matches!(stored_entry(file, id), Stored::Entry(now) if now == original) {
+        return failed_before(Some(&kept), format!("{shown} {CHANGED}"));
+    }
+    let scope = match id.client {
+        ClientId::ClaudeCodeLocal => "local",
+        _ => "user",
+    };
+    let project = id.project.as_deref();
+    let call = |args: &[&str]| {
+        run_child(
+            &mut claude_command(&claude, args, project, inputs.login_path),
+            CLAUDE_CALL_TIMEOUT,
+        )
+    };
+    let not_readable = |after: &str| {
+        unrecovered(format!(
+            "The app cannot read {shown} after claude mcp {after}, so it stopped. The original entry of {name} is in {saved}. {RESTORE_HINT}"
+        ))
+    };
+    let other_form = |keys: &[String]| {
+        unrecovered(format!(
+            "Server {name} is not in the form the app wrote: {}. Its original entry is in {saved}. {RESTORE_HINT}",
+            keys_text(keys)
+        ))
+    };
+    // The add-back of the original after a call that removed the server and stored nothing.
+    let add_back = |why: String| {
+        let back = call(&["mcp", "add-json", name, &original_text, "--scope", scope]);
+        match stored_entry(file, id) {
+            Stored::Entry(stored) => match holds(&stored, &original) {
+                Ok(()) => failed_before(
+                    Some(&kept),
+                    format!(
+                        "{why}. The app added the original entry back, so {name} is as it was."
+                    ),
+                ),
+                Err(keys) => other_form(&keys),
+            },
+            Stored::Gone => unrecovered(format!(
+                "{why}. Server {name} is removed, and the app could not add it back. The add-back: {}. Its entry is in {saved}. {RESTORE_HINT}",
+                call_text("add-json", &back)
+            )),
+            Stored::Unknown => not_readable("add-json"),
+        }
+    };
+    let remove = call(&["mcp", "remove", name, "--scope", scope]);
+    match stored_entry(file, id) {
+        Stored::Unknown => return not_readable("remove"),
+        Stored::Entry(stored) => {
+            return match holds(&stored, &original) {
+                Ok(()) => failed_before(
+                    Some(&kept),
+                    format!(
+                        "{}, and {name} is still in {shown}. The app made no change.",
+                        call_text("remove", &remove)
+                    ),
+                ),
+                Err(keys) => other_form(&keys),
+            };
+        }
+        Stored::Gone if !passed(&remove) => {
+            return add_back(format!(
+                "{}, and it removed {name}",
+                call_text("remove", &remove)
+            ));
+        }
+        Stored::Gone => {}
+    }
+    let add = call(&["mcp", "add-json", name, &sent, "--scope", scope]);
+    match stored_entry(file, id) {
+        Stored::Unknown => not_readable("add-json"),
+        Stored::Gone => add_back(call_text("add-json", &add)),
+        Stored::Entry(stored) => match holds(&stored, &wrapped) {
+            Err(keys) => other_form(&keys),
+            Ok(()) => {
+                let mut message = with_kept_copy_removed(
+                    &kept,
+                    format!(
+                        "Wrapped. Backup: {}. {}",
+                        backup_path(listed).display(),
+                        restart_step(id)
+                    ),
+                );
+                if !notes.is_empty() {
+                    message.push_str(&format!(" Notes: {}.", notes.join(", ")));
+                }
+                RowEnd {
+                    outcome: Outcome::Wrapped,
+                    message,
+                    unrecovered: false,
+                }
+            }
+        },
+    }
 }
 
 /// Judges a file row by what the read after the rename holds, never by the rename's result.

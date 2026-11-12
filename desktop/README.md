@@ -2,7 +2,7 @@
 
 A tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked. It also checks for its own updates.
 
-The app reads the log. For its Servers tab, it also reads the MCP client config files that [INSTALL.md](../INSTALL.md#client-reference) lists. It writes its own settings files, plus the new version of itself when it installs an update. When you press Wrap on the Servers tab, it also writes the client config files of the rows you selected, a backup and a kept copy of each, and the audit log's folder and file. The tab starts your login shell to read its `PATH`, and a wrap first runs `mcp-guardrail-proxy check-policy`. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
+The app reads the log. For its Servers tab, it also reads the MCP client config files that [INSTALL.md](../INSTALL.md#client-reference) lists. It writes its own settings files, plus the new version of itself when it installs an update. When you press Wrap on the Servers tab, it also writes the client config files of the rows you selected, a backup and a kept copy of each, and the audit log's folder and file. The tab starts your login shell to read its `PATH`, and a wrap first runs `mcp-guardrail-proxy check-policy`. It changes `~/.claude.json` only through the `claude` command. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
 
 ## Run it
 
@@ -106,7 +106,25 @@ When the read after the rename shows other bytes, another program wrote the file
 
 The app cannot wrap a file whose group you are not in, because the new file must keep the old group. Change the file's group, then wrap again. A rename drops extended attributes and ACLs, as most editors do.
 
-After a wrap, restart the client, as the client reference in `INSTALL.md` says: quit and reopen Claude Desktop, Cursor, VS Code, or Windsurf, or start a new Gemini CLI session. The app does not probe the wrapped server. To undo a wrap, use [Undo](../INSTALL.md#undo) in `INSTALL.md`.
+After a wrap, restart the client, as the client reference in `INSTALL.md` says: quit and reopen Claude Desktop, Cursor, VS Code, or Windsurf, or start a new Gemini CLI or Claude Code session. For a local-scope Claude Code server, start the new session in the project folder. The app does not probe the wrapped server. To undo a wrap, use [Undo](../INSTALL.md#undo) in `INSTALL.md`.
+
+#### Claude Code rows
+
+The app never writes `~/.claude.json`, because Claude Code rewrites that file while it runs. It wraps a Claude Code server with the `INSTALL.md` step 6 writer: `claude mcp remove <name> --scope <user|local>`, then `claude mcp add-json <name> <entry> --scope <user|local>`. A local-scope call runs in the project folder. Each call gets the login shell's `PATH` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, and has 60 s to end.
+
+Before the remove, the app writes the backup and the kept copy of `~/.claude.json`, then reads the file again. When the server's entry changed since the scan, the row fails with "changed while the app wrapped it. Scan again.", and the app starts no `claude` call. After each call, the app reads `~/.claude.json` and acts on what it holds, not on the exit status, because a call that the app stopped at its timeout can still have made its change:
+
+- After the remove, an entry that holds every key of the original, with the same values, means that nothing changed. A missing entry goes on to `add-json`. When the remove failed and the entry is gone, the app adds the original back.
+- After `add-json`, an entry that holds every key of the wrapped entry means the row is wrapped. A missing entry gets the original back.
+- An entry in another form, an add-back that does not hold the original, or a `~/.claude.json` that the app cannot read ends the row with the kept copy left in place. The result names each key that differs, never a value.
+
+Claude Code 2.1.319 drops a `cwd` key from the entry that `claude mcp add-json` stores. So a wrap of a Claude Code entry with `cwd` ends with the kept copy left in place, and the result names `cwd`. Restore that server from the kept copy, as below, and add its `cwd` back by hand after Claude Code keeps it.
+
+All Claude Code rows share `~/.claude.json`. So after such an end, the app skips the later Claude Code rows of that wrap.
+
+A Claude Code row has no checkbox when `claude` is not on your login shell's `PATH`, when the server name is empty or starts with `-`, or when the entry is over 64 KiB as JSON text. `claude` takes the entry as one argument, and the cap keeps it under the OS limit, also for the add-back.
+
+Warning: during `claude mcp add-json`, the entry's `env` values, such as tokens, are in a process argument list. Another user on the same machine can read them with `ps` while the command runs, as `INSTALL.md` step 6 warns.
 
 When a row ends in a state that no read confirms, the app skips each later row of that file in the same wrap, with "Not wrapped: an earlier row could not confirm <file>. Read the result of that row." Rows of other files still run. A row that fails before its change, or whose end a read confirms, stops no later row. When the app stops a row on an internal error, the result says so and names the kept copy, or says that the app made no change. That row's file also stops for the rest of the wrap.
 
@@ -124,6 +142,29 @@ For a JSON file:
 2. Find the server's entry in the kept copy.
 3. In the file, set the `command` and `args` of that entry to the values in the kept copy. Remove `args` from the file's entry when the kept copy's entry has none. Change nothing else. When the entry is gone from the file, copy the whole entry from the kept copy into the file's server table.
 4. Make sure that the file's entry shows the `command` and `args` of the kept copy. Then remove the kept copy, because it holds your `env` values.
+
+For Claude Code, never copy a file over `~/.claude.json`. `<name>` is the server name, `<kept>` is the kept copy's full path, and `<project>` is the project folder of a local-scope server.
+
+1. Run `claude mcp remove '<name>' --scope user` when the server is still listed. For local scope, use `--scope local` and run it in the project folder.
+2. Add the entry back from the kept copy. The command passes the entry to `claude` and does not print it. For local scope, run it in the project folder with `--scope local`, and read the entry from `["projects"]['<project>']["mcpServers"]`.
+
+   ```sh
+   claude mcp add-json '<name>' "$(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["mcpServers"][sys.argv[2]]))' '<kept>' '<name>')" --scope user
+   ```
+
+3. Compare the stored entry with the kept copy's entry. Each command reads both files, writes nothing, and prints only `match` or the names of the keys that differ. For user scope:
+
+   ```sh
+   python3 -c 'import json, sys; name = sys.argv[1]; stored = json.load(open(sys.argv[2])).get("mcpServers", {}).get(name) or {}; kept = json.load(open(sys.argv[3]))["mcpServers"][name]; differ = [key for key in kept if stored.get(key) != kept[key]]; print(", ".join(differ) or "match")' '<name>' "$HOME/.claude.json" '<kept>'
+   ```
+
+   For local scope:
+
+   ```sh
+   python3 -c 'import json, sys; name, project = sys.argv[1], sys.argv[2]; servers = lambda path: json.load(open(path)).get("projects", {}).get(project, {}).get("mcpServers", {}); stored = servers(sys.argv[3]).get(name) or {}; kept = servers(sys.argv[4])[name]; differ = [key for key in kept if stored.get(key) != kept[key]]; print(", ".join(differ) or "match")' '<name>' '<project>' "$HOME/.claude.json" '<kept>'
+   ```
+
+4. Remove the kept copy only when the command prints `match`. Else keep it. It is then the only full copy of that entry, such as of a `cwd` key that `claude` dropped.
 
 ## Notifications on macOS
 
