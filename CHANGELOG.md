@@ -4,6 +4,8 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-12
+
 ### Changed
 
 - The Sessions table's Last seen column in the desktop app now shows the date as well as the time.
