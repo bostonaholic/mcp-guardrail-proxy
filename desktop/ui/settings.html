@@ -14,13 +14,6 @@
         </svg>
         <span>General</span>
       </button>
-      <button type="button" role="tab" id="tab-updates" data-tab="updates" aria-controls="panel-updates" aria-selected="false" tabindex="-1">
-        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 7.5v8M8.5 12.5l3.5 3.5 3.5-3.5" />
-        </svg>
-        <span>Updates</span>
-      </button>
       <button type="button" role="tab" id="tab-servers" data-tab="servers" aria-controls="panel-servers" aria-selected="false" tabindex="-1">
         <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3.5" y="4" width="17" height="6.5" rx="1.5" />
@@ -28,6 +21,13 @@
           <path d="M7 7.25h.01M7 16.75h.01M11 7.25h6M11 16.75h6" />
         </svg>
         <span>Servers</span>
+      </button>
+      <button type="button" role="tab" id="tab-updates" data-tab="updates" aria-controls="panel-updates" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7.5v8M8.5 12.5l3.5 3.5 3.5-3.5" />
+        </svg>
+        <span>Updates</span>
       </button>
     </nav>
     <section id="panel-general" class="panel" role="tabpanel" aria-labelledby="tab-general">
@@ -40,24 +40,6 @@
       <p id="path-variable-note" class="muted note" hidden>MCP_GUARDRAIL_AUDIT_LOG sets this path. Launch the app without it to change the path here.</p>
       <label class="setting"><input id="notifications" type="checkbox" /> Notify me when a call is blocked</label>
       <p id="save-error" class="banner" hidden></p>
-    </section>
-    <section id="panel-updates" class="panel" role="tabpanel" aria-labelledby="tab-updates" hidden>
-      <p class="muted">Version <span id="update-version"></span></p>
-      <div class="modes" role="group" aria-label="Update mode">
-        <button type="button" class="mode" data-mode="off">Off</button>
-        <button type="button" class="mode" data-mode="notify">Notify</button>
-        <button type="button" class="mode" data-mode="install">Install</button>
-      </div>
-      <p id="update-status"></p>
-      <p id="settings-note" class="muted note" hidden></p>
-      <p id="install-note" class="muted note" hidden></p>
-      <div class="actions">
-        <button type="button" id="check-now">Check now</button>
-        <button type="button" id="install" hidden>Install</button>
-        <button type="button" id="restart" hidden>Restart</button>
-        <button type="button" id="open-release-page" hidden>Open release page</button>
-      </div>
-      <p id="open-error" class="banner" hidden></p>
     </section>
     <section id="panel-servers" class="panel" role="tabpanel" aria-labelledby="tab-servers" hidden>
       <p id="servers-summary"></p>
@@ -79,6 +61,24 @@
         <button type="button" id="servers-scan">Scan again</button>
       </div>
       <ul id="servers-results"></ul>
+    </section>
+    <section id="panel-updates" class="panel" role="tabpanel" aria-labelledby="tab-updates" hidden>
+      <p class="muted">Version <span id="update-version"></span></p>
+      <div class="modes" role="group" aria-label="Update mode">
+        <button type="button" class="mode" data-mode="off">Off</button>
+        <button type="button" class="mode" data-mode="notify">Notify</button>
+        <button type="button" class="mode" data-mode="install">Install</button>
+      </div>
+      <p id="update-status"></p>
+      <p id="settings-note" class="muted note" hidden></p>
+      <p id="install-note" class="muted note" hidden></p>
+      <div class="actions">
+        <button type="button" id="check-now">Check now</button>
+        <button type="button" id="install" hidden>Install</button>
+        <button type="button" id="restart" hidden>Restart</button>
+        <button type="button" id="open-release-page" hidden>Open release page</button>
+      </div>
+      <p id="open-error" class="banner" hidden></p>
     </section>
     <script src="settings.js"></script>
   </body>

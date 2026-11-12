@@ -29,8 +29,8 @@ Point each proxy at that file with `--audit-log`. Several proxies can share one 
 The app has two windows. The main window is the dashboard: stats, sessions, recent calls, and banners about the log and the settings file. The Settings window holds the settings. It has three tabs in a toolbar at the top:
 
 - General: the audit log path and the blocked-call notifications checkbox.
-- Updates: the version, the update mode, the update status, and the update buttons.
 - Servers: the MCP servers that the proxy does not wrap. See [Servers](#servers).
+- Updates: the version, the update mode, the update status, and the update buttons.
 
 Open the Settings window in one of these ways:
 
