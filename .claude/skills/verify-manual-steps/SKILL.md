@@ -30,6 +30,7 @@ Write the checks to `$TMPDIR/manual-checks.md` as a table with these columns: id
 | A blocked call reaching the app | `D block PATH`, then wait 2 seconds for one poll. |
 | A macOS notification sent or held back | `D notified-since <unix-seconds>`. See "Notifications". |
 | A corrupt settings file | `D quit`, `D corrupt-settings`, then `D launch`. |
+| A client config that the app reads or writes | The shell. Write and read it under the sandbox `home` from `D paths`. |
 | A Linux build or run | No driver. Report the check as not covered. |
 | A code path traced but not reproduced | Write a reproducer as a test or a shell script, run it, and report the result. |
 
@@ -61,7 +62,7 @@ Every launch sets `HOME` to the sandbox, so the user's real `settings.json` and 
 
 An element hidden with the HTML `hidden` attribute reports `"found": false`. So a banner that is not shown reads as `found: false`, and a banner that is shown reads as `found: true` with its message in `text`.
 
-The Settings window does not exist at launch. Run `D ui press "#open-settings"` to open it on the General tab, then `D ui press "#tab-updates"` for the Updates tab. The first `D ui get` after the window opens can print `"found": false`, so run it again before you count it as a fail. Closing the window only hides it. While the Settings window is open, `D shot` saves it, because it is the front window of the app.
+The Settings window does not exist at launch. Run `D ui press "#open-settings"` to open it on the General tab, then `D ui press "#tab-updates"` for the Updates tab, or `D ui press "#tab-servers"` for the Servers tab. The first `D ui get` after the window opens can print `"found": false`, so run it again before you count it as a fail. Closing the window only hides it. While the Settings window is open, `D shot` saves it, because it is the front window of the app.
 
 The driver uses the Accessibility API and events sent to the app's pid. It does not move the mouse, take the keyboard, or bring the window to the front. The window does still appear on the user's screen. The host process needs Accessibility permission, and `D shot` also needs Screen Recording permission. If either is missing, the command exits 2 and names the setting, so tell the user.
 

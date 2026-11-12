@@ -234,7 +234,7 @@ xattr -dr com.apple.quarantine ~/.local/bin/mcp-guardrail-proxy
 
 ## Client reference
 
-Step 5 reads these files. The Writer and Re-parse columns only name the step 6 writer and its check. Step 6 gives the full steps and the rollback. "Tested" says where the facts in a row come from. A row marked "no" comes from the client's documentation, read on 2026-11-07, and nobody has wired that client with these steps. Check its documentation before you rely on the row. `<file>` in a command of this table is the full path of the row's config file, and `<name>` is the server name.
+Step 5 reads these files. The Writer and Re-parse columns only name the step 6 writer and its check. Step 6 gives the full steps and the rollback. "Tested" says where the facts in a row come from. A row marked "no" comes from the client's documentation, read on 2026-11-07, and nobody has wired that client with these steps. Check its documentation before you rely on the row. `<file>` in a command of this table is the full path of the row's config file, and `<name>` is the server name. The Servers tab of the desktop app reads the same files, except the plugin row, and gives each server the step 5.2 status.
 
 | Client | Config file | Where servers live | Writer | Re-parse | Restart | Tested |
 |---|---|---|---|---|---|---|

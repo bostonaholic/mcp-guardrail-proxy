@@ -60,6 +60,7 @@ Each spec has a `*Broken.tla` variant that must fail, which proves the check can
 | `run_replay` | A loop over the corpus. Its only state is an `Interceptor`. |
 | The probe handshake, `run_probe` in `src/probe.rs` | A fixed sequence of three writes and two waits under one deadline. Each wait keeps only the id it awaits. Following `tools/list` pagination or answering server requests would carry state between events, and either change needs a machine. |
 | `latest` in `desktop/ui/app.js` | Empty until the first snapshot, then the last snapshot. |
+| The Servers tab's last scan in `desktop/ui/settings.js` | Empty until the first scan, then the last scan, like `latest`. |
 | `Monitor` in `desktop/src/monitor.rs` | Its own state is the watched path and the notifications switch. A message compares one path with it once, like `latest`, and replaces the switch. The switch gates whole polls and keeps no record of dropped alerts. `TailCursor` and `Watch` keep the event-order rules under their own specs. |
 | `SettingsStore` in `desktop/src/settings.rs` | It holds the last saved values and the problem from the launch load, which the next save clears. Each save replaces the values, and no rule reads the order of earlier events. |
 | Window shown or hidden, notification permission | Held by Tauri and the OS, not by this code. |

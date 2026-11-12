@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window reads the dashboard and opens Settings. The Settings window reads and changes the settings and the update mode, and listens for updates.",
+  "description": "The main window reads the dashboard and opens Settings. The Settings window reads and changes the settings and the update mode, listens for updates, and shows the Servers tab.",
   "windows": ["main", "settings"],
   "permissions": ["core:event:default"]
 }

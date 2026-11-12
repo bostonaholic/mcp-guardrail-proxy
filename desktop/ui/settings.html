@@ -21,6 +21,14 @@
         </svg>
         <span>Updates</span>
       </button>
+      <button type="button" role="tab" id="tab-servers" data-tab="servers" aria-controls="panel-servers" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3.5" y="4" width="17" height="6.5" rx="1.5" />
+          <rect x="3.5" y="13.5" width="17" height="6.5" rx="1.5" />
+          <path d="M7 7.25h.01M7 16.75h.01M11 7.25h6M11 16.75h6" />
+        </svg>
+        <span>Servers</span>
+      </button>
     </nav>
     <section id="panel-general" class="panel" role="tabpanel" aria-labelledby="tab-general">
       <form id="path-form">
@@ -50,6 +58,23 @@
         <button type="button" id="open-release-page" hidden>Open release page</button>
       </div>
       <p id="open-error" class="banner" hidden></p>
+    </section>
+    <section id="panel-servers" class="panel" role="tabpanel" aria-labelledby="tab-servers" hidden>
+      <p id="servers-summary"></p>
+      <ul id="servers-notes" class="muted note"></ul>
+      <p id="servers-problem" class="banner" hidden></p>
+      <p id="servers-empty" class="muted" hidden></p>
+      <div class="servers-table">
+        <table>
+          <thead>
+            <tr><th>Client</th><th>Scope</th><th>Server</th><th>Status</th><th>Reason</th></tr>
+          </thead>
+          <tbody id="servers-rows"></tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <button type="button" id="servers-scan">Scan again</button>
+      </div>
     </section>
     <script src="settings.js"></script>
   </body>

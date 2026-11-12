@@ -1,13 +1,16 @@
 //! Tray app: watches the proxy's audit log, notifies on blocked calls, and checks for its own
-//! updates. The only files it writes are its own settings files and, when it installs an
-//! update, the new version of itself. It never talks to a proxy, so it cannot weaken one, and
-//! the proxy runs the same without it. Only `updater.rs` reaches the network.
+//! updates. It also reads the MCP client config files that `INSTALL.md` lists, for the Servers
+//! tab. The only files it writes are its own settings files and, when it installs an update,
+//! the new version of itself. It never talks to a proxy, so it cannot weaken one, and the proxy
+//! runs the same without it. Only `updater.rs` reaches the network.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audit;
+mod clients;
 mod monitor;
 mod notify;
+mod servers;
 mod settings;
 #[cfg(test)]
 #[path = "../../src/machines/spec_graph.rs"]
@@ -24,8 +27,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use audit::{Snapshot, tray_status};
+use clients::Platform;
 use monitor::Monitor;
 use serde::{Deserialize, Serialize};
+use servers::{HostEnv, ServersView};
 use settings::{EffectiveSettings, SettingsStore, SettingsView, chosen_folder_log_path};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -74,6 +79,7 @@ type SharedSnapshot = Arc<Mutex<Snapshot>>;
 enum SettingsTab {
     General,
     Updates,
+    Servers,
 }
 
 impl SettingsTab {
@@ -82,6 +88,7 @@ impl SettingsTab {
         match self {
             SettingsTab::General => "general",
             SettingsTab::Updates => "updates",
+            SettingsTab::Servers => "servers",
         }
     }
 }
@@ -197,6 +204,48 @@ async fn choose_audit_log_path(
     chosen_folder_log_path(folder)
         .map(Some)
         .map_err(|error| error.to_string())
+}
+
+/// Runs `task` on a blocking thread, so a slow file or child process never holds the main
+/// thread or a runtime worker. A panic gives `fixed`, never the panic text, because a panic text
+/// can quote config text, such as an `env` token. `supervise` in `updater.rs` passes its panic
+/// text on, which is safe there only because update errors hold no config text.
+async fn run_blocking<T: Send + 'static>(task: impl FnOnce() -> T + Send + 'static, fixed: T) -> T {
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .unwrap_or(fixed)
+}
+
+/// What the scan reads from the app's own environment and settings.
+fn host_env(app: &AppHandle, home: PathBuf) -> HostEnv {
+    let audit_log_path = app
+        .state::<Mutex<SettingsState>>()
+        .lock()
+        .expect("the settings lock")
+        .store
+        .effective()
+        .audit_log_path;
+    HostEnv {
+        home,
+        platform: Platform::from_os(std::env::consts::OS),
+        path: std::env::var_os("PATH"),
+        cargo_install_root: std::env::var_os("CARGO_INSTALL_ROOT"),
+        cargo_home: std::env::var_os("CARGO_HOME"),
+        audit_log_path,
+        shell: std::env::var_os("SHELL"),
+    }
+}
+
+#[tauri::command]
+async fn servers(app: AppHandle) -> ServersView {
+    let home = match app.path().home_dir() {
+        Ok(home) => home,
+        Err(error) => {
+            return ServersView::problem_only(format!("Cannot find your home folder: {error}"));
+        }
+    };
+    let env = host_env(&app, home);
+    run_blocking(move || servers::scan(&env), ServersView::stopped()).await
 }
 
 #[tauri::command]
@@ -506,7 +555,8 @@ fn main() {
             install_update,
             restart_to_update,
             open_release_page,
-            open_settings
+            open_settings,
+            servers
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -581,7 +631,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::SettingsTab;
+    use super::{SettingsTab, run_blocking};
     use serde_json::json;
 
     #[test]
@@ -589,6 +639,7 @@ mod tests {
         for (name, tab) in [
             ("general", SettingsTab::General),
             ("updates", SettingsTab::Updates),
+            ("servers", SettingsTab::Servers),
         ] {
             assert_eq!(
                 serde_json::from_value::<SettingsTab>(json!(name)).ok(),
@@ -622,6 +673,27 @@ mod tests {
         assert!(
             serde_json::from_value::<SettingsTab>(json!(1)).is_err(),
             "a number must be refused"
+        );
+    }
+
+    #[test]
+    fn a_panicking_blocking_task_returns_its_fixed_value() {
+        let fixed = "The scan stopped on an internal error.".to_string();
+        let after_panic = tauri::async_runtime::block_on(run_blocking(
+            || -> String { panic!("a config value tok-12345678 in the panic text") },
+            fixed.clone(),
+        ));
+        assert_eq!(
+            after_panic, fixed,
+            "a task that panics gives exactly the caller's fixed value, never the panic text"
+        );
+        let returned = tauri::async_runtime::block_on(run_blocking(
+            || "the task's own value".to_string(),
+            fixed,
+        ));
+        assert_eq!(
+            returned, "the task's own value",
+            "a task that returns gives its own value"
         );
     }
 }

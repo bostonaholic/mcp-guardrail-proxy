@@ -53,3 +53,4 @@ button:disabled { color: var(--muted); }
 .panel input[type="text"]:disabled { color: var(--muted); }
 .modes, .actions { display: flex; gap: 6px; margin-top: 10px; }
 .modes button[aria-pressed="true"] { border-color: var(--fg); font-weight: 600; }
+.servers-table { max-height: 190px; overflow-y: auto; margin-top: 10px; }

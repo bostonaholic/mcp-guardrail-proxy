@@ -10,6 +10,23 @@ function showBanner(element, text) {
   element.textContent = text || "";
 }
 
+function cell(text, className) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (className) td.className = className;
+  return td;
+}
+
+function fillRows(tbody, rows) {
+  tbody.replaceChildren(
+    ...rows.map((cells) => {
+      const tr = document.createElement("tr");
+      tr.append(...cells);
+      return tr;
+    }),
+  );
+}
+
 const tabs = [...document.querySelectorAll('[role="tab"]')];
 
 function selectedTab() {
@@ -26,6 +43,7 @@ function selectTab(name, { focus = false } = {}) {
     byId(tab.getAttribute("aria-controls")).hidden = !selected;
   }
   if (focus) chosen.focus();
+  if (chosen.dataset.tab === "servers") scanServers();
 }
 
 for (const tab of tabs) {
@@ -139,6 +157,41 @@ byId("open-release-page").addEventListener("click", async () => {
     showBanner(byId("open-error"), `Cannot open the release page: ${error}`);
   }
 });
+
+// Server names, paths, and reasons come from config files that other programs write.
+function renderServers(view) {
+  const count = view.wrapped === 1 ? "1 server is" : `${view.wrapped} servers are`;
+  byId("servers-summary").textContent = `${count} wrapped in the proxy.`;
+  byId("servers-notes").replaceChildren(
+    ...view.notes.map((note) => {
+      const li = document.createElement("li");
+      li.textContent = note;
+      return li;
+    }),
+  );
+  showBanner(byId("servers-problem"), view.problem);
+  let empty = null;
+  if (view.rows.length === 0) {
+    empty = view.wrapped === 0 ? "The app found no MCP client config." : "Every server it found is wrapped.";
+  }
+  showBanner(byId("servers-empty"), empty);
+  fillRows(
+    byId("servers-rows"),
+    view.rows.map((row) => [
+      cell(row.client),
+      cell(row.scope),
+      cell(row.server),
+      cell(row.status),
+      cell(row.reason || ""),
+    ]),
+  );
+}
+
+async function scanServers() {
+  renderServers(await invoke("servers"));
+}
+
+byId("servers-scan").addEventListener("click", scanServers);
 
 selectTab(location.hash.slice(1));
 listen("settings-tab", (event) => selectTab(event.payload));

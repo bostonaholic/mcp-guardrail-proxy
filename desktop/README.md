@@ -2,7 +2,7 @@
 
 A tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked. It also checks for its own updates.
 
-The app reads the log and writes only its own settings files, plus the new version of itself when it installs an update. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
+The app reads the log. For its Servers tab, it also reads the MCP client config files that [INSTALL.md](../INSTALL.md#client-reference) lists. It writes only its own settings files, plus the new version of itself when it installs an update. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
 
 ## Run it
 
@@ -26,10 +26,11 @@ Point each proxy at that file with `--audit-log`. Several proxies can share one 
 
 ## Settings
 
-The app has two windows. The main window is the dashboard: stats, sessions, recent calls, and banners about the log and the settings file. The Settings window holds the settings. It has two tabs in a toolbar at the top:
+The app has two windows. The main window is the dashboard: stats, sessions, recent calls, and banners about the log and the settings file. The Settings window holds the settings. It has three tabs in a toolbar at the top:
 
 - General: the audit log path and the blocked-call notifications checkbox.
 - Updates: the version, the update mode, the update status, and the update buttons.
+- Servers: the MCP servers that the proxy does not wrap. See [Servers](#servers).
 
 Open the Settings window in one of these ways:
 
@@ -54,6 +55,24 @@ At launch, `MCP_GUARDRAIL_AUDIT_LOG` wins when it is set. Then comes the saved p
 Clear the "Notify me when a call is blocked" checkbox to stop notifications. The table and the tray still update. Alerts that the app drops while the box is clear never replay when you check it again. The checkbox works while `MCP_GUARDRAIL_AUDIT_LOG` is set.
 
 If the app cannot read `settings.json` at launch, it uses the defaults and shows a banner on the dashboard that names the file. The next save replaces the file. To reset the settings, delete `settings.json`.
+
+## Servers
+
+The Servers tab lists each MCP server in your client config files that the proxy does not wrap. The app scans when you open the tab and when you press Scan again. It reads the files of the [client reference](../INSTALL.md#client-reference) in `INSTALL.md`, except the Claude Code plugin row. It reads each file whole, with no size cap.
+
+Each row shows the client, the scope, the server name, the status, and the reason. The scope is `user`, or `local:` and the project folder for a Claude Code local-scope server. The tab gives each server the status of `INSTALL.md` step 5.2:
+
+- `remote`: the server runs over HTTP or SSE, which the proxy does not wrap.
+- `disabled`: the client has the server turned off, or the server's Claude Code project folder is gone.
+- `malformed`: the entry breaks a step 5.2 rule, and the reason names the rule. A file that does not parse gives one `malformed` row for the whole file, with the line and the column of the error.
+- `wrappable`: the proxy can wrap the server.
+- `unreadable`: the app cannot read the file. The path is a folder, a named pipe, or another non-file, the app has no permission to read it, or its bytes are not UTF-8 text. This status is the app's own, not part of step 5.2.
+
+The tab counts the `already wrapped` servers and does not list them. When it finds no client config file, it says so. When every server it finds is wrapped, it says that too.
+
+The tab never shows a `command`, `args`, or `env` value, because those values can hold tokens. A parse error shows only its line and column, because a parser's message can quote the bad value.
+
+Claude Code plugin servers are not listed. When `~/.claude.json` exists, the tab says so. The install steps in [INSTALL.md](../INSTALL.md) wrap plugin servers.
 
 ## Notifications on macOS
 
@@ -113,4 +132,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/update.rs` is the pure update machine, which decides each update check, install, and notice. `src/tail.rs`, `src/watch.rs`, and `src/update.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/settings.rs` holds the app's own settings. `src/update_settings.rs` reads and writes the update settings file. `src/updater.rs` is the only module that reaches the network. `src/notify.rs` sends the notifications. `src/main.rs` holds the tray, the two windows, the commands, the poll thread, and the update thread. `ui/index.html` and `ui/app.js` are the dashboard. `ui/settings.html` and `ui/settings.js` are the Settings window. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
+`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/update.rs` is the pure update machine, which decides each update check, install, and notice. `src/tail.rs`, `src/watch.rs`, and `src/update.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/clients.rs` holds the client table and the scan rules of `INSTALL.md` step 5.2, and does no I/O. `src/servers.rs` reads the client config files for the Servers tab. `src/settings.rs` holds the app's own settings. `src/update_settings.rs` reads and writes the update settings file. `src/updater.rs` is the only module that reaches the network. `src/notify.rs` sends the notifications. `src/main.rs` holds the tray, the two windows, the commands, the poll thread, and the update thread. `ui/index.html` and `ui/app.js` are the dashboard. `ui/settings.html` and `ui/settings.js` are the Settings window. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
