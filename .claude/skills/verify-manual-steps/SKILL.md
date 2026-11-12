@@ -30,7 +30,7 @@ Write the checks to `$TMPDIR/manual-checks.md` as a table with these columns: id
 | A blocked call reaching the app | `D block PATH`, then wait 2 seconds for one poll. |
 | A macOS notification sent or held back | `D notified-since <unix-seconds>`. See "Notifications". |
 | A corrupt settings file | `D quit`, `D corrupt-settings`, then `D launch`. |
-| A client config that the app reads or writes | The shell. Write and read it under the sandbox `home` from `D paths`. Put the binary at `$home/.cargo/bin/mcp-guardrail-proxy`. On the Servers tab, the row checkboxes are `#wrap-row-<index>`, and the buttons are `#servers-wrap` and `#servers-scan`. |
+| A client config that the app reads or writes | The shell. Write and read it under the sandbox `home` from `D paths`. Put the binary at `$home/.cargo/bin/mcp-guardrail-proxy`. The tab reads its `PATH` from a login shell, so put sandbox `PATH` entries in `$home/.zprofile`. On macOS, `/etc/zprofile` moves the folders of `/etc/paths` ahead of each `$home/.zshenv` entry. On the Servers tab, the row checkboxes are `#wrap-row-<index>`, and the buttons are `#servers-wrap` and `#servers-scan`. |
 | A Linux build or run | No driver. Report the check as not covered. |
 | A code path traced but not reproduced | Write a reproducer as a test or a shell script, run it, and report the result. |
 

@@ -18,6 +18,8 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+rustix = { version = "1", features = ["process"] }
+tempfile = "3"
 toml_edit = "0.25"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -28,7 +30,3 @@ objc2-user-notifications = "0.3"
 
 [features]
 self-install = []
-
-[dev-dependencies]
-rustix = { version = "1", features = ["process"] }
-tempfile = "3"

@@ -158,7 +158,7 @@ impl ClientFile {
     }
 }
 
-/// The client reference rows of `INSTALL.md:241-249` under `home`, without the plugin row.
+/// The rows of the `INSTALL.md` client reference under `home`, without the plugin row.
 pub fn client_files(platform: Platform, home: &Path) -> Vec<ClientFile> {
     let json = |relative: &str, client: ClientId, key: &'static str| ClientFile {
         path: home.join(relative),
@@ -475,7 +475,7 @@ fn string_list(value: Option<&Value>) -> Option<Vec<&str>> {
     value?.as_array()?.iter().map(Value::as_str).collect()
 }
 
-/// The `already wrapped` test of `INSTALL.md:107`.
+/// The `already wrapped` test of `INSTALL.md` step 5.2.
 pub fn is_already_wrapped(entry: &Value) -> bool {
     let proxy = entry
         .get("command")
@@ -505,7 +505,7 @@ fn is_disabled(entry: &Value) -> bool {
         || entry.get("disabled") == Some(&Value::Bool(true))
 }
 
-/// The `malformed` rules of `INSTALL.md:110`, in order. The note names keys, never values.
+/// The `malformed` rules of `INSTALL.md` step 5.2, in order. The note names keys, never values.
 fn malformed_note(entry: &Value) -> Option<&'static str> {
     let Some(command) = entry.get("command") else {
         return Some("no command and no remote key");
@@ -600,7 +600,7 @@ fn edit_error(reason: &str) -> EditError {
     }
 }
 
-/// The upstream command of `INSTALL.md:118-122`, with the notes of `INSTALL.md:118-127`.
+/// The upstream command and the notes of `INSTALL.md` steps 5.3 and 5.4.
 fn upstream_command(
     entry: &Value,
     command: &str,
@@ -647,7 +647,7 @@ fn upstream_command(
     (upstream, notes)
 }
 
-/// The `args` of the step 6 entry (`INSTALL.md:146-155`).
+/// The `args` of the `INSTALL.md` step 6 entry.
 fn wrapped_args(audit_log: &str, upstream: String, old_args: &[&str]) -> Vec<String> {
     let mut args = vec![
         "proxy".to_string(),
@@ -827,7 +827,7 @@ pub fn judge_readback(read: Option<&[u8]>, new_text: &[u8], first: &[u8]) -> Rea
     }
 }
 
-/// The restart step of the client reference (`INSTALL.md:241-249`) after a wrap.
+/// The restart step of the `INSTALL.md` client reference after a wrap.
 pub fn restart_step(id: &ServerId) -> String {
     let label = id.client.label();
     match (id.client, &id.project) {
@@ -886,8 +886,26 @@ pub fn hidden_forms(_entry: &Value) -> Vec<Vec<u8>> {
     Vec::new()
 }
 
-pub fn shown_line(_output: &[u8], _forms: &[Vec<u8>]) -> Option<String> {
-    None
+/// The fixed text in place of a line that still holds a hidden value.
+const HIDDEN_LINE: &str = "The output held a hidden value, so the app does not show it.";
+
+fn holds_bytes(text: &[u8], part: &[u8]) -> bool {
+    text.windows(part.len()).any(|window| window == part)
+}
+
+/// The last non-empty line of a whole child output, or the fixed text when that line holds any
+/// hidden form. The test runs on the exact line that the app shows.
+pub fn shown_line(output: &[u8], forms: &[Vec<u8>]) -> Option<String> {
+    let text = String::from_utf8_lossy(output);
+    let line = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())?
+        .trim();
+    if forms.iter().any(|form| holds_bytes(line.as_bytes(), form)) {
+        return Some(HIDDEN_LINE.to_string());
+    }
+    Some(line.to_string())
 }
 
 #[cfg(test)]

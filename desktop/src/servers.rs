@@ -8,19 +8,22 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::io::{Seek, SeekFrom};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
+use rustix::process::{Pid, Signal};
 use serde::Serialize;
 
 use crate::clients::{
     ClientFile, ClientId, FileState, Found, Layout, Platform, Readback, ServerId, ServerRow,
     Status, checked_new_text, client_file, client_files, file_row, find_entry, judge_readback,
-    restart_step, scan_text, writer_blocker,
+    restart_step, scan_text, shown_line, writer_blocker,
 };
 
 const PROXY_NAME: &str = "mcp-guardrail-proxy";
@@ -143,7 +146,9 @@ pub fn scan(env: &HostEnv) -> ServersView {
             }
         }
     }
-    let path = env.path.as_deref();
+    let login = login_path(env);
+    view.notes.extend(login.note);
+    let path = login.path.as_deref();
     view.binary = find_binary(env, path).and_then(|bin| bin.to_str().map(str::to_string));
     let wrap_on = match ready(env, path) {
         Ok(_) => true,
@@ -190,18 +195,45 @@ pub struct WrapReport {
 #[derive(Debug)]
 enum WrapRefusal {
     Platform,
-    NoBinary { cargo: PathBuf },
-    BinaryNotUtf8 { path: PathBuf },
-    AuditNotUtf8 { path: PathBuf },
+    NoBinary {
+        cargo: PathBuf,
+    },
+    BinaryNotUtf8 {
+        path: PathBuf,
+    },
+    AuditNotUtf8 {
+        path: PathBuf,
+    },
     AuditEmpty,
-    AuditRelative { path: String },
-    AuditNoFileName { path: String },
-    AuditNamesBackup { path: String },
+    AuditRelative {
+        path: String,
+    },
+    AuditNoFileName {
+        path: String,
+    },
+    AuditNamesBackup {
+        path: String,
+    },
     AuditLinkToMissing,
-    AuditNamesClient { path: String, file: PathBuf },
-    AuditIsFolder { path: String },
-    AuditNotAFile { path: String },
-    AuditCannotOpen { path: String, error: io::Error },
+    AuditNamesClient {
+        path: String,
+        file: PathBuf,
+    },
+    AuditIsFolder {
+        path: String,
+    },
+    AuditNotAFile {
+        path: String,
+    },
+    AuditCannotOpen {
+        path: String,
+        error: io::Error,
+    },
+    CheckPolicy {
+        bin: String,
+        how: String,
+        line: Option<String>,
+    },
 }
 
 impl fmt::Display for WrapRefusal {
@@ -257,6 +289,13 @@ impl fmt::Display for WrapRefusal {
                 f,
                 "A wrapped server could not open the audit log {path}: {error}. The app wrapped nothing."
             ),
+            Self::CheckPolicy { bin, how, line } => {
+                write!(f, "{bin} check-policy {how}, so the app wrapped nothing.")?;
+                match line {
+                    Some(line) => write!(f, " Its last line: {line}"),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
@@ -319,7 +358,7 @@ fn non_empty(value: &Option<OsString>) -> Option<PathBuf> {
 }
 
 /// `${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin/mcp-guardrail-proxy`, where install
-/// step 2 puts the binary (`INSTALL.md:31`).
+/// step 2 puts the binary.
 fn cargo_binary(env: &HostEnv) -> PathBuf {
     non_empty(&env.cargo_install_root)
         .or_else(|| non_empty(&env.cargo_home))
@@ -437,7 +476,7 @@ fn audit_log_refusal(env: &HostEnv) -> Option<WrapRefusal> {
 }
 
 /// Makes sure a proxy can open the audit log, with the open of `JsonlAuditSink::create`
-/// (`src/telemetry.rs:239-250`). A missing log becomes an empty file, as the first proxy start
+/// in the proxy's `telemetry.rs`. A missing log becomes an empty file, as the first proxy start
 /// would make it. Metadata comes first, because an open of a named pipe blocks.
 fn prepare_audit_log(path: &Path) -> Result<(), WrapRefusal> {
     let shown = path.display().to_string();
@@ -493,8 +532,10 @@ pub fn wrap_request(
         });
     }
     let started = Instant::now();
-    let login = env.path.as_deref();
+    let login = login_path(env);
+    let login = login.path.as_deref();
     let ready = ready(env, login).map_err(|refusal| refusal.to_string())?;
+    check_policy(&ready.bin, login).map_err(|refusal| refusal.to_string())?;
     prepare_audit_log(&env.audit_log_path).map_err(|refusal| refusal.to_string())?;
     let results: Vec<WrapResult> = rows
         .iter()
@@ -640,7 +681,7 @@ fn read_state(path: &Path) -> io::Result<FileState> {
 }
 
 /// Claude Code rewrites `~/.claude.json` while it runs, so only `claude` may change it
-/// (`INSTALL.md:197`), also through a link from another client path.
+/// (`INSTALL.md` step 6), also through a link from another client path.
 fn is_claude_json(env: &HostEnv, real: &Path) -> bool {
     let Some(claude) = client_file(env.platform, &env.home, ClientId::ClaudeCodeUser) else {
         return false;
@@ -939,11 +980,60 @@ pub struct LoginPath {
     pub note: Option<String>,
 }
 
-pub fn login_path(_env: &HostEnv) -> LoginPath {
-    LoginPath {
-        path: None,
-        note: None,
+/// Each half of the marker is one `printf` argument, so a shell that echoes its command line
+/// prints no whole marker before the PATH.
+const PRINT_PATH: &str = r#"printf "%s%s\n" "__MCP_GUARDRAIL_PATH__=" "$PATH""#;
+const PATH_MARKER: &[u8] = b"__MCP_GUARDRAIL_PATH__=";
+const FALLBACK_SHELL: &str = "/bin/sh";
+const LOGIN_PATH_NOTE: &str = "The app could not read the PATH of your login shell, so it looks for programs on its own PATH.";
+pub const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The PATH that `"$SHELL" -i -l` sets up, where version managers add folders. A macOS app that
+/// Finder starts has a short PATH that lacks them. `-i` reads `.zshrc` and `.bashrc`.
+pub fn login_path(env: &HostEnv) -> LoginPath {
+    let shell = env
+        .shell
+        .as_deref()
+        .map(Path::new)
+        .filter(|shell| shell.is_absolute())
+        .unwrap_or(Path::new(FALLBACK_SHELL));
+    let mut command = Command::new(shell);
+    command
+        .args(["-i", "-l", "-c", PRINT_PATH])
+        .env("HOME", &env.home);
+    let printed = match run_child(&mut command, LOGIN_SHELL_TIMEOUT) {
+        Ok(ChildRun {
+            exit: Some(status),
+            stdout: ChildOutput::Whole(stdout),
+            ..
+        }) if status.success() => marker_path(&stdout),
+        _ => None,
+    };
+    match printed {
+        Some(path) => LoginPath {
+            path: Some(OsString::from_vec(path)),
+            note: None,
+        },
+        None => LoginPath {
+            path: env.path.clone(),
+            note: Some(LOGIN_PATH_NOTE.to_string()),
+        },
     }
+}
+
+/// The text after the last marker, up to the end of that line. Startup files can print before
+/// it, and a startup line can hold the marker too.
+fn marker_path(stdout: &[u8]) -> Option<Vec<u8>> {
+    let start = stdout
+        .windows(PATH_MARKER.len())
+        .rposition(|window| window == PATH_MARKER)?
+        + PATH_MARKER.len();
+    let rest = &stdout[start..];
+    let end = rest
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(rest.len());
+    Some(rest[..end].to_vec())
 }
 
 /// One output stream of a child: the whole text, or why the app kept none.
@@ -962,8 +1052,126 @@ pub struct ChildRun {
     pub stderr: ChildOutput,
 }
 
-pub fn run_child(_command: &mut Command, _timeout: Duration) -> io::Result<ChildRun> {
-    Err(io::Error::other("not written yet"))
+/// The most bytes the app keeps of one child output stream.
+const MAX_CHILD_OUTPUT: u64 = 65_536;
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Runs `command` in a new session, with stdin at end of file and each output stream in an
+/// unnamed temp file. It waits only for the direct child, so a descendant that keeps a stream
+/// open cannot hold the scan, the wrap, or the wrap lock. At `timeout` it kills the child's
+/// process group, reaps the child, and keeps no output, because the kill can stop a write in
+/// the middle of a value.
+pub fn run_child(command: &mut Command, timeout: Duration) -> io::Result<ChildRun> {
+    let stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
+    command
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?);
+    // SAFETY: the hook runs between fork and exec, where only async-signal-safe calls are
+    // sound. `setsid` is one, and the closure allocates nothing and takes no lock. A new
+    // session has no controlling terminal, so an `-i` shell cannot stop to wait for one.
+    unsafe {
+        command.pre_exec(|| rustix::process::setsid().map(drop).map_err(io::Error::from));
+    }
+    let mut child = command.spawn()?;
+    let started = Instant::now();
+    let exit = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(error) => {
+                stop_child(&mut child);
+                return Err(error);
+            }
+        }
+        let waited = started.elapsed();
+        if waited >= timeout {
+            stop_child(&mut child);
+            break None;
+        }
+        std::thread::sleep(CHILD_POLL_INTERVAL.min(timeout - waited));
+    };
+    let ended = exit.is_some();
+    Ok(ChildRun {
+        exit,
+        stdout: kept_output(stdout, ended)?,
+        stderr: kept_output(stderr, ended)?,
+    })
+}
+
+/// The child leads its own process group, and the group id stays its pid until the app reaps
+/// it, so the kill reaches no other process.
+fn stop_child(child: &mut Child) {
+    let _ = rustix::process::kill_process_group(Pid::from_child(child), Signal::KILL);
+    let _ = child.wait();
+}
+
+/// The whole stream, or none of it. A cut stream could end in part of a value.
+fn kept_output(mut file: File, ended: bool) -> io::Result<ChildOutput> {
+    if !ended {
+        return Ok(ChildOutput::Dropped);
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_CHILD_OUTPUT + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CHILD_OUTPUT {
+        return Ok(ChildOutput::TooLong);
+    }
+    Ok(ChildOutput::Whole(bytes))
+}
+
+const POLICY_OK: &[u8] = b"policy OK:";
+pub const CHECK_POLICY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How a child ended, for a message.
+fn exit_text(exit: Option<ExitStatus>, timeout: Duration) -> String {
+    match exit {
+        None => format!("did not end within {} s", timeout.as_secs()),
+        Some(status) => match (status.code(), status.signal()) {
+            (Some(code), _) => format!("exited with status {code}"),
+            (None, Some(signal)) => format!("stopped on signal {signal}"),
+            (None, None) => "stopped".to_string(),
+        },
+    }
+}
+
+/// Install step 3 runs the same test. It stops a wrap that would point
+/// every server at a binary that cannot start, such as one that macOS quarantines.
+fn check_policy(bin: &str, path: Option<&OsStr>) -> Result<(), WrapRefusal> {
+    let mut command = Command::new(bin);
+    command.arg("check-policy");
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    let run = run_child(&mut command, CHECK_POLICY_TIMEOUT).map_err(|error| {
+        WrapRefusal::CheckPolicy {
+            bin: bin.to_string(),
+            how: format!("could not start: {error}"),
+            line: None,
+        }
+    })?;
+    let how = match (&run.exit, &run.stdout) {
+        (Some(status), ChildOutput::Whole(stdout))
+            if status.success() && stdout.starts_with(POLICY_OK) =>
+        {
+            return Ok(());
+        }
+        (Some(status), ChildOutput::TooLong) if status.success() => {
+            "printed more than 64 KiB".to_string()
+        }
+        (Some(status), _) if status.success() => "did not print policy OK:".to_string(),
+        (exit, _) => exit_text(*exit, CHECK_POLICY_TIMEOUT),
+    };
+    let line = match &run.stderr {
+        ChildOutput::Whole(stderr) => shown_line(stderr, &[]),
+        ChildOutput::TooLong | ChildOutput::Dropped => None,
+    };
+    Err(WrapRefusal::CheckPolicy {
+        bin: bin.to_string(),
+        how,
+        line,
+    })
 }
 
 #[cfg(test)]

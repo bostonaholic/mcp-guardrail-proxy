@@ -2,7 +2,7 @@
 
 A tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked. It also checks for its own updates.
 
-The app reads the log. For its Servers tab, it also reads the MCP client config files that [INSTALL.md](../INSTALL.md#client-reference) lists. It writes its own settings files, plus the new version of itself when it installs an update. When you press Wrap on the Servers tab, it also writes the client config files of the rows you selected, a backup and a kept copy of each, and the audit log's folder and file. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
+The app reads the log. For its Servers tab, it also reads the MCP client config files that [INSTALL.md](../INSTALL.md#client-reference) lists. It writes its own settings files, plus the new version of itself when it installs an update. When you press Wrap on the Servers tab, it also writes the client config files of the rows you selected, a backup and a kept copy of each, and the audit log's folder and file. The tab starts your login shell to read its `PATH`, and a wrap first runs `mcp-guardrail-proxy check-policy`. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
 
 ## Run it
 
@@ -76,7 +76,9 @@ Claude Code plugin servers are not listed. When `~/.claude.json` exists, the tab
 
 ### Wrap
 
-The tab shows the binary and the audit log that a wrap writes into each entry. The binary is the first `mcp-guardrail-proxy` on the app's `PATH`, else `${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin/mcp-guardrail-proxy`. The audit log is the path that the dashboard watches. A row has a checkbox when the app can wrap it, and each checkbox starts checked. Press Wrap to wrap the checked rows. The tab shows one result line per row, then scans again. The result lines stay until the next Wrap or Scan again press.
+The tab shows the binary and the audit log that a wrap writes into each entry. The binary is the first `mcp-guardrail-proxy` on your login shell's `PATH`, else `${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin/mcp-guardrail-proxy`, as in install step 3.
+
+A macOS app that Finder starts gets a short `PATH`, which misses folders that a version manager adds. So each scan and each wrap runs your login shell once, as `"$SHELL" -i -l -c`, and reads the `PATH` that it prints. It runs `/bin/sh` when `SHELL` is not set or not a full path. That `PATH` finds the binary and each bare upstream command. When the shell fails, prints more than 64 KiB, or does not end within 10 s, the app uses its own `PATH`, and the tab says so in a note. The shell runs your startup files, so keep them quiet and fast. The audit log is the path that the dashboard watches. A row has a checkbox when the app can wrap it, and each checkbox starts checked. Press Wrap to wrap the checked rows. The tab shows one result line per row, then scans again. The result lines stay until the next Wrap or Scan again press.
 
 Wrap is off for every row, with the reason in the banner, when:
 
@@ -86,9 +88,11 @@ Wrap is off for every row, with the reason in the banner, when:
 - the audit log path names a backup or a kept copy, directly or through a link, or it is a link to a file that does not exist;
 - the platform is not macOS or Linux.
 
+Before the first write, a press runs `mcp-guardrail-proxy check-policy`, as install step 3 does. It must exit 0 within 10 s and print `policy OK:` first, in at most 64 KiB. Else the wrap refuses, changes no file, and shows the exit status and the last line that the binary printed to stderr. This stops a wrap that would point every server at a binary that cannot start, such as one that macOS quarantines.
+
 A press also refuses the whole wrap, and changes no file, when the audit log is a folder or another non-file, or when its folder cannot be created or the file does not open for append. A missing log becomes an empty file with mode 0600, as the first proxy start would make it.
 
-For each row, the app reads the file again and checks the entry again. A server that is gone, or that is no longer `wrappable`, is skipped with the reason. The app then writes the entry of `INSTALL.md` step 6. It changes only the values of `command` and `args`, and every other byte of a JSON file stays as it was. `command` becomes the binary. `args` becomes `proxy`, `--audit-log`, the log path, `--`, the old command, and the old `args`. A bare command that the app finds on its `PATH` becomes its full path, as in step 5.3.
+For each row, the app reads the file again and checks the entry again. A server that is gone, or that is no longer `wrappable`, is skipped with the reason. The app then writes the entry of `INSTALL.md` step 6. It changes only the values of `command` and `args`, and every other byte of a JSON file stays as it was. `command` becomes the binary. `args` becomes `proxy`, `--audit-log`, the log path, `--`, the old command, and the old `args`. A bare command that the app finds on the login shell's `PATH` becomes its full path, as in step 5.3. A bare command that it does not find stays bare, with the note `not found on PATH`.
 
 The app writes each file once per row, with a rename, in this order:
 
