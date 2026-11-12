@@ -25,7 +25,7 @@ use serde::Serialize;
 use crate::clients::{
     ClientFile, ClientId, FileState, Found, Layout, Platform, Readback, ServerId, ServerRow,
     Status, checked_new_text, claude_code_blocker, client_file, client_files, file_row, find_entry,
-    holds, judge_readback, restart_step, scan_text_with, shown_line, wrapped_entry, writer_blocker,
+    holds, judge_readback, restart_step, scan_text_with, shown_line, wrapped_entry,
 };
 use serde_json::Value;
 
@@ -136,13 +136,11 @@ pub fn scan(env: &HostEnv) -> ServersView {
         notes: login.note.into_iter().collect(),
     };
     let lookup = |name: &str| find_on_path(name, path);
-    let blocker = |id: &ServerId, entry: &Value| {
-        writer_blocker(id.client).or_else(|| match (id.client, &ready) {
-            (ClientId::ClaudeCodeUser | ClientId::ClaudeCodeLocal, Ok(ready)) => {
-                claude_code_blocker(&id.name, entry, &ready.bin, &ready.audit_log, &lookup)
-            }
-            _ => None,
-        })
+    let blocker = |id: &ServerId, entry: &Value| match (id.client, &ready) {
+        (ClientId::ClaudeCodeUser | ClientId::ClaudeCodeLocal, Ok(ready)) => {
+            claude_code_blocker(&id.name, entry, &ready.bin, &ready.audit_log, &lookup)
+        }
+        _ => None,
     };
     for file in client_files(env.platform, &env.home) {
         let read = read_client_file(&file.path);
@@ -690,9 +688,6 @@ fn wrap_row(inputs: &RowInputs<'_>, kept_copy: &mut Option<PathBuf>) -> RowEnd {
             id.client.label()
         ));
     };
-    if let Some(blocker) = writer_blocker(id.client) {
-        return skipped(format!("Not wrapped: {blocker}"));
-    }
     let real = real_path(&file.path);
     if file.layout != Layout::ClaudeJson && is_claude_json(inputs.env, &real) {
         return failed_before(

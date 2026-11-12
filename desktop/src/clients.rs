@@ -726,7 +726,7 @@ pub fn checked_new_text(
     let wrap = wrap_of(&entry, audit_log, lookup)?;
     let new_text = match file.layout {
         Layout::Json { key, .. } => splice_json(text, key, name, bin, &wrap.args)?,
-        Layout::CodexToml => return Err(edit_error("the app cannot edit config.toml yet")),
+        Layout::CodexToml => edit_toml(text, name, bin, &wrap.args)?,
         Layout::ClaudeJson => {
             return Err(edit_error(
                 "~/.claude.json changes only through the claude command",
@@ -815,6 +815,62 @@ fn splice_json(
     Ok(spliced)
 }
 
+/// A TOML basic string. The default form of `toml_edit` can pick a literal string for a value
+/// that holds a backslash, and `INSTALL.md` step 6 asks for basic strings with `"` and `\` escaped.
+fn basic_string(value: &str) -> Result<toml_edit::Value, EditError> {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\t' => quoted.push_str("\\t"),
+            '\r' => quoted.push_str("\\r"),
+            other if other.is_control() => quoted.push_str(&format!("\\u{:04X}", u32::from(other))),
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
+        .parse()
+        .map_err(|_| edit_error("a new value is not a TOML string"))
+}
+
+/// Replaces one value and keeps the old value's decor, which holds the spaces around it and a
+/// comment after it. A missing key goes at the end of the table.
+fn set_toml_value(entry: &mut dyn toml_edit::TableLike, key: &str, mut value: toml_edit::Value) {
+    match entry.get_mut(key) {
+        Some(toml_edit::Item::Value(old)) => {
+            *value.decor_mut() = old.decor().clone();
+            *old = value;
+        }
+        _ => {
+            entry.insert(key, toml_edit::Item::Value(value));
+        }
+    }
+}
+
+/// Sets `command` and `args` of `[mcp_servers.<name>]` and keeps every other key, subtable,
+/// and comment. `toml_edit` writes a line end after each key-value line and table header.
+fn edit_toml(text: &str, name: &str, bin: &str, args: &[String]) -> Result<String, EditError> {
+    let mut document = parse_toml(text).map_err(|reason| EditError { reason })?;
+    let entry = document
+        .get_mut(CODEX_KEY)
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .and_then(|servers| servers.get_mut(name))
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .ok_or_else(|| edit_error("the entry is not a table in the file"))?;
+    let mut new_args = toml_edit::Array::new();
+    for arg in args {
+        new_args.push_formatted(basic_string(arg)?);
+    }
+    new_args.fmt();
+    set_toml_value(entry, "command", basic_string(bin)?);
+    set_toml_value(entry, "args", toml_edit::Value::Array(new_args));
+    Ok(document.to_string())
+}
+
 /// A file as one open read saw it. `mode` holds the permission bits only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileState {
@@ -899,7 +955,6 @@ pub const MAX_ADD_JSON_BYTES: usize = 65_536;
 /// Why one row gets no checkbox. `Display` is the window text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowBlocker {
-    NotYet(ClientId),
     NameRefused,
     NoClaude,
     TooLong,
@@ -908,11 +963,6 @@ pub enum RowBlocker {
 impl fmt::Display for RowBlocker {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RowBlocker::NotYet(client) => write!(
-                formatter,
-                "The app cannot wrap {} servers yet. The install steps in INSTALL.md wrap them.",
-                client.label()
-            ),
             RowBlocker::NameRefused => formatter.write_str(
                 "The name is empty or starts with -, so claude cannot take it as a server name.",
             ),
@@ -922,14 +972,6 @@ impl fmt::Display for RowBlocker {
             RowBlocker::TooLong => formatter
                 .write_str("The entry is over 64 KiB, too long for the app to pass to claude."),
         }
-    }
-}
-
-/// The blocker of a row that the app has no writer for.
-pub fn writer_blocker(client: ClientId) -> Option<RowBlocker> {
-    match client {
-        ClientId::Codex => Some(RowBlocker::NotYet(client)),
-        _ => None,
     }
 }
 

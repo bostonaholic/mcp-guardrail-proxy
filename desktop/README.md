@@ -92,7 +92,7 @@ Before the first write, a press runs `mcp-guardrail-proxy check-policy`, as inst
 
 A press also refuses the whole wrap, and changes no file, when the audit log is a folder or another non-file, or when its folder cannot be created or the file does not open for append. A missing log becomes an empty file with mode 0600, as the first proxy start would make it.
 
-For each row, the app reads the file again and checks the entry again. A server that is gone, or that is no longer `wrappable`, is skipped with the reason. The app then writes the entry of `INSTALL.md` step 6. It changes only the values of `command` and `args`, and every other byte of a JSON file stays as it was. `command` becomes the binary. `args` becomes `proxy`, `--audit-log`, the log path, `--`, the old command, and the old `args`. A bare command that the app finds on the login shell's `PATH` becomes its full path, as in step 5.3. A bare command that it does not find stays bare, with the note `not found on PATH`.
+For each row, the app reads the file again and checks the entry again. A server that is gone, or that is no longer `wrappable`, is skipped with the reason. The app then writes the entry of `INSTALL.md` step 6. It changes only the values of `command` and `args`, and every other byte of a JSON file stays as it was. In the Codex `~/.codex/config.toml`, the app edits `[mcp_servers.<name>]` and keeps every other key, subtable, and comment. It writes both values as TOML basic strings, and a missing `args` goes at the end of the table. The TOML editor writes `\n` after each key-value line and table header, so a `config.toml` with no final line end gains one, and a CRLF line end on those lines becomes LF. `command` becomes the binary. `args` becomes `proxy`, `--audit-log`, the log path, `--`, the old command, and the old `args`. A bare command that the app finds on the login shell's `PATH` becomes its full path, as in step 5.3. A bare command that it does not find stays bare, with the note `not found on PATH`.
 
 The app writes each file once per row, with a rename, in this order:
 
@@ -106,7 +106,7 @@ When the read after the rename shows other bytes, another program wrote the file
 
 The app cannot wrap a file whose group you are not in, because the new file must keep the old group. Change the file's group, then wrap again. A rename drops extended attributes and ACLs, as most editors do.
 
-After a wrap, restart the client, as the client reference in `INSTALL.md` says: quit and reopen Claude Desktop, Cursor, VS Code, or Windsurf, or start a new Gemini CLI or Claude Code session. For a local-scope Claude Code server, start the new session in the project folder. The app does not probe the wrapped server. To undo a wrap, use [Undo](../INSTALL.md#undo) in `INSTALL.md`.
+After a wrap, restart the client, as the client reference in `INSTALL.md` says: quit and reopen Claude Desktop, Cursor, VS Code, or Windsurf, or start a new Codex, Gemini CLI, or Claude Code session. For a local-scope Claude Code server, start the new session in the project folder. The app does not probe the wrapped server. To undo a wrap, use [Undo](../INSTALL.md#undo) in `INSTALL.md`.
 
 #### Claude Code rows
 
@@ -136,11 +136,11 @@ Restore from the kept copy, not from `<file>.bak-guardrail`, because the next wr
 
 Restore one entry, never the whole file. A copy of the kept copy over the file erases each later change to that file, by another program or by a later wrap.
 
-For a JSON file:
+For a JSON file or the Codex `config.toml`:
 
 1. Quit the client.
 2. Find the server's entry in the kept copy.
-3. In the file, set the `command` and `args` of that entry to the values in the kept copy. Remove `args` from the file's entry when the kept copy's entry has none. Change nothing else. When the entry is gone from the file, copy the whole entry from the kept copy into the file's server table.
+3. In the file, set the `command` and `args` of that entry to the values in the kept copy. Remove `args` from the file's entry when the kept copy's entry has none. Change nothing else. When the entry is gone from the file, copy the whole entry from the kept copy into the file's server table, or for Codex, the whole `[mcp_servers.<name>]` table and its subtables.
 4. Make sure that the file's entry shows the `command` and `args` of the kept copy. Then remove the kept copy, because it holds your `env` values.
 
 For Claude Code, never copy a file over `~/.claude.json`. `<name>` is the server name, `<kept>` is the kept copy's full path, and `<project>` is the project folder of a local-scope server.
