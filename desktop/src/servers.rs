@@ -1,8 +1,5 @@
 //! Reads the MCP client config files under the home folder for the Servers tab, and wraps the
 //! rows that the page selects.
-// Red-suite placeholder: every body below is a stub that returns an empty or refusing value.
-// IMPLEMENT replaces each body and removes this allow.
-#![allow(dead_code)]
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -25,7 +22,7 @@ use serde::Serialize;
 use crate::clients::{
     ClientFile, ClientId, FileState, Found, Layout, Platform, Readback, ServerId, ServerRow,
     Status, checked_new_text, claude_code_blocker, client_file, client_files, file_row, find_entry,
-    holds, judge_readback, restart_step, scan_text_with, shown_line, wrapped_entry,
+    hidden_forms, holds, judge_readback, restart_step, scan_text_with, shown_line, wrapped_entry,
 };
 use serde_json::Value;
 
@@ -866,15 +863,37 @@ fn passed(run: &io::Result<ChildRun>) -> bool {
     matches!(run, Ok(ChildRun { exit: Some(status), .. }) if status.success())
 }
 
-/// How a `claude` call ended, with none of its output.
-fn call_text(call: &str, run: &io::Result<ChildRun>) -> String {
-    match run {
-        Ok(run) => format!(
-            "claude mcp {call} {}",
-            exit_text(run.exit, CLAUDE_CALL_TIMEOUT)
-        ),
-        Err(error) => format!("claude mcp {call} could not start: {error}"),
+/// How a `claude` call ended, with the last line of its output when the app can show it with
+/// every hidden form hidden. The app shows no output of a call that it stopped at its timeout,
+/// and none of an output over 64 KiB, because it never cuts an output inside a value.
+fn call_text(call: &str, run: &io::Result<ChildRun>, forms: &[Vec<u8>]) -> String {
+    let run = match run {
+        Ok(run) => run,
+        Err(error) => return format!("claude mcp {call} could not start: {error}"),
+    };
+    let how = format!(
+        "claude mcp {call} {}",
+        exit_text(run.exit, CLAUDE_CALL_TIMEOUT)
+    );
+    if run.exit.is_none() {
+        return format!("{how}, so the app stopped it and shows none of its output");
     }
+    let mut too_long = false;
+    for stream in [&run.stderr, &run.stdout] {
+        match stream {
+            ChildOutput::Whole(output) => {
+                if let Some(line) = shown_line(output, forms) {
+                    return format!("{how}: {line}");
+                }
+            }
+            ChildOutput::TooLong => too_long = true,
+            ChildOutput::Dropped => {}
+        }
+    }
+    if too_long {
+        return format!("{how}. Its output was too long to show, over 64 KiB");
+    }
+    how
 }
 
 fn keys_text(keys: &[String]) -> String {
@@ -964,6 +983,7 @@ fn wrap_claude_row(
     };
     *kept_copy = Some(kept.clone());
     let saved = kept.display();
+    let forms = hidden_forms(&original);
     // Equality, not `holds`: an entry with one more key, such as a new `env` key, holds the
     // first read, and the remove would then delete that key.
     if !matches!(stored_entry(file, id), Stored::Entry(now) if now == original) {
@@ -1006,7 +1026,7 @@ fn wrap_claude_row(
             },
             Stored::Gone => unrecovered(format!(
                 "{why}. Server {name} is removed, and the app could not add it back. The add-back: {}. Its entry is in {saved}. {RESTORE_HINT}",
-                call_text("add-json", &back)
+                call_text("add-json", &back, &forms)
             )),
             Stored::Unknown => not_readable("add-json"),
         }
@@ -1020,7 +1040,7 @@ fn wrap_claude_row(
                     Some(&kept),
                     format!(
                         "{}, and {name} is still in {shown}. The app made no change.",
-                        call_text("remove", &remove)
+                        call_text("remove", &remove, &forms)
                     ),
                 ),
                 Err(keys) => other_form(&keys),
@@ -1029,7 +1049,7 @@ fn wrap_claude_row(
         Stored::Gone if !passed(&remove) => {
             return add_back(format!(
                 "{}, and it removed {name}",
-                call_text("remove", &remove)
+                call_text("remove", &remove, &forms)
             ));
         }
         Stored::Gone => {}
@@ -1037,7 +1057,7 @@ fn wrap_claude_row(
     let add = call(&["mcp", "add-json", name, &sent, "--scope", scope]);
     match stored_entry(file, id) {
         Stored::Unknown => not_readable("add-json"),
-        Stored::Gone => add_back(call_text("add-json", &add)),
+        Stored::Gone => add_back(call_text("add-json", &add, &forms)),
         Stored::Entry(stored) => match holds(&stored, &wrapped) {
             Err(keys) => other_form(&keys),
             Ok(()) => {

@@ -1,8 +1,5 @@
 //! The MCP client table and the `INSTALL.md` step 5.2 and step 6 rules that the Servers tab
 //! mirrors. Pure: no I/O, no UI.
-// Red-suite placeholder: every body below is a stub that returns an empty or refusing value.
-// IMPLEMENT replaces each body and removes this allow.
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -251,13 +248,16 @@ struct Entry {
     project_exists: bool,
 }
 
-/// Classifies every entry of one file. A file that does not parse, or whose server key holds
-/// no table, gives one `malformed` row whose reason quotes no file text.
+/// Classifies every entry of one file, with no row blocker. The scan passes its blockers to
+/// `scan_text_with`, so only the classifier tests call this form.
+#[cfg(test)]
 pub fn scan_text(file: &ClientFile, text: &str, folder_exists: &dyn Fn(&Path) -> bool) -> FileScan {
     scan_text_with(file, text, folder_exists, &|_, _| None)
 }
 
-/// `scan_text`, where `blocker` can take the checkbox from a `wrappable` row, with its reason.
+/// Classifies every entry of one file. A file that does not parse, or whose server key holds
+/// no table, gives one `malformed` row whose reason quotes no file text. `blocker` can take the
+/// checkbox from a `wrappable` row, with its reason.
 pub fn scan_text_with(
     file: &ClientFile,
     text: &str,
@@ -1003,8 +1003,64 @@ pub fn claude_code_blocker(
     too_long.then_some(RowBlocker::TooLong)
 }
 
-pub fn hidden_forms(_entry: &Value) -> Vec<Vec<u8>> {
-    Vec::new()
+/// The shortest `args` token that the app hides. Shorter tokens, such as `-y` and `1`, would
+/// hide words of the line that you act on.
+pub const MIN_HIDDEN_ARG_BYTES: usize = 4;
+const HIDDEN_MARK: &[u8] = b"[hidden]";
+
+/// Each non-empty `env` value and each `args` token of 4 bytes or more, raw and in the form
+/// that `serde_json` writes inside a string, with no quotes.
+pub fn hidden_forms(entry: &Value) -> Vec<Vec<u8>> {
+    let env_values = entry
+        .get("env")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, value)| value.as_str())
+        .filter(|value| !value.is_empty());
+    let args = string_list(entry.get("args")).unwrap_or_default();
+    let arg_values = args
+        .into_iter()
+        .filter(|arg| arg.len() >= MIN_HIDDEN_ARG_BYTES);
+    let mut forms = Vec::new();
+    for value in env_values.chain(arg_values) {
+        forms.push(value.as_bytes().to_vec());
+        let escaped = serde_json::to_string(value).unwrap_or_default();
+        if let Some(inner) = escaped.get(1..escaped.len().saturating_sub(1))
+            && inner != value
+        {
+            forms.push(inner.as_bytes().to_vec());
+        }
+    }
+    forms
+}
+
+/// Marks each byte inside any match of any form, at every start offset, so matches that
+/// overlap are hidden whole. Each run of marked bytes becomes `[hidden]`.
+fn redact(output: &[u8], forms: &[Vec<u8>]) -> Vec<u8> {
+    let mut marked = vec![false; output.len()];
+    for start in 0..output.len() {
+        for form in forms.iter().filter(|form| !form.is_empty()) {
+            let end = start + form.len();
+            if output.get(start..end) == Some(form.as_slice())
+                && let Some(span) = marked.get_mut(start..end)
+            {
+                span.fill(true);
+            }
+        }
+    }
+    let mut redacted = Vec::with_capacity(output.len());
+    let mut in_run = false;
+    for (byte, hidden) in output.iter().zip(&marked) {
+        if *hidden && !in_run {
+            redacted.extend_from_slice(HIDDEN_MARK);
+        }
+        if !*hidden {
+            redacted.push(*byte);
+        }
+        in_run = *hidden;
+    }
+    redacted
 }
 
 /// The fixed text in place of a line that still holds a hidden value.
@@ -1014,10 +1070,13 @@ fn holds_bytes(text: &[u8], part: &[u8]) -> bool {
     text.windows(part.len()).any(|window| window == part)
 }
 
-/// The last non-empty line of a whole child output, or the fixed text when that line holds any
-/// hidden form. The test runs on the exact line that the app shows.
+/// The last non-empty line of a whole child output, with each hidden form hidden. A line that
+/// still holds a hidden form, such as one that `[hidden]` completed, gives the fixed text. That
+/// last test runs on the exact line that the app shows. The redaction runs on the whole output
+/// before the line split, so a value with line ends is hidden whole.
 pub fn shown_line(output: &[u8], forms: &[Vec<u8>]) -> Option<String> {
-    let text = String::from_utf8_lossy(output);
+    let redacted = redact(output, forms);
+    let text = String::from_utf8_lossy(&redacted);
     let line = text
         .lines()
         .rev()

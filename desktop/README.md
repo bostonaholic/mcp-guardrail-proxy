@@ -118,6 +118,8 @@ Before the remove, the app writes the backup and the kept copy of `~/.claude.jso
 - After `add-json`, an entry that holds every key of the wrapped entry means the row is wrapped. A missing entry gets the original back.
 - An entry in another form, an add-back that does not hold the original, or a `~/.claude.json` that the app cannot read ends the row with the kept copy left in place. The result names each key that differs, never a value.
 
+A result of a failed `claude` call gives its exit status and the last non-empty line of its output, stderr first. In that line, each `env` value of the entry and each `args` token of 4 bytes or more shows as `[hidden]`, raw or in its JSON-escaped form. When the line still holds such a value, the result says "The output held a hidden value, so the app does not show it." in its place. The app shows no output line when the output is over 64 KiB, or when the call did not end within 60 s, because it never cuts an output inside a value. Redaction matches whole values only, so a value that `claude` prints in another form or in part can still show.
+
 Claude Code 2.1.319 drops a `cwd` key from the entry that `claude mcp add-json` stores. So a wrap of a Claude Code entry with `cwd` ends with the kept copy left in place, and the result names `cwd`. Restore that server from the kept copy, as below, and add its `cwd` back by hand after Claude Code keeps it.
 
 All Claude Code rows share `~/.claude.json`. So after such an end, the app skips the later Claude Code rows of that wrap.
