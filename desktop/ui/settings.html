@@ -14,6 +14,14 @@
         </svg>
         <span>General</span>
       </button>
+      <button type="button" role="tab" id="tab-servers" data-tab="servers" aria-controls="panel-servers" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3.5" y="4" width="17" height="6.5" rx="1.5" />
+          <rect x="3.5" y="13.5" width="17" height="6.5" rx="1.5" />
+          <path d="M7 7.25h.01M7 16.75h.01M11 7.25h6M11 16.75h6" />
+        </svg>
+        <span>Servers</span>
+      </button>
       <button type="button" role="tab" id="tab-updates" data-tab="updates" aria-controls="panel-updates" aria-selected="false" tabindex="-1">
         <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="9" />
@@ -32,6 +40,27 @@
       <p id="path-variable-note" class="muted note" hidden>MCP_GUARDRAIL_AUDIT_LOG sets this path. Launch the app without it to change the path here.</p>
       <label class="setting"><input id="notifications" type="checkbox" /> Notify me when a call is blocked</label>
       <p id="save-error" class="banner" hidden></p>
+    </section>
+    <section id="panel-servers" class="panel" role="tabpanel" aria-labelledby="tab-servers" hidden>
+      <p id="servers-summary"></p>
+      <p class="muted note">Binary: <span id="servers-binary"></span></p>
+      <p class="muted note">Audit log: <span id="servers-audit-log"></span></p>
+      <ul id="servers-notes" class="muted note"></ul>
+      <p id="servers-problem" class="banner" hidden></p>
+      <p id="servers-empty" class="muted" hidden></p>
+      <div class="servers-table">
+        <table>
+          <thead>
+            <tr><th>Wrap</th><th>Client</th><th>Scope</th><th>Server</th><th>Status</th><th>Reason</th></tr>
+          </thead>
+          <tbody id="servers-rows"></tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <button type="button" id="servers-wrap" disabled>Wrap</button>
+        <button type="button" id="servers-scan">Scan again</button>
+      </div>
+      <ul id="servers-results"></ul>
     </section>
     <section id="panel-updates" class="panel" role="tabpanel" aria-labelledby="tab-updates" hidden>
       <p class="muted">Version <span id="update-version"></span></p>

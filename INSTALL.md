@@ -133,7 +133,7 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
    7. End the message with one request: reply yes to apply the listed rows, or name the rows to leave out. The user approves or leaves out a plugin as one unit.
    8. Wait for the reply. This is the only time the install waits for the user.
 
-   If no entry is `wrappable`, tell the user so and stop. A second full run of these steps stops here, because every wired entry is `already wrapped`.
+   If no entry is `wrappable`, tell the user so and stop. A second full run of these steps stops here, because every wired entry is `already wrapped`. On macOS, also name the Servers tab of the desktop app's Settings window as the place to wrap a server added later.
 
 6. Wire the approved rows. Run this command first:
 
@@ -159,6 +159,14 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
    1. Back up the file before the row's write to it, with `command cp -pf '<file>' '<file>.bak-guardrail'`. `command` skips a `cp -i` alias, and `-p` keeps the file mode. The backup holds the file from right before the latest write. The plugin writer names the files that it backs up with this command.
    2. Write the row with the writer for its client, in the list below. Each writer gives its check and its rollback. The list is the only source of these. The client reference only names them.
    3. If the writer's write or its check fails, do the writer's rollback, show the command and its output, and go to the next row.
+
+      If the rollback also fails, keep a copy of each backup that the row wrote, before any other write to that file. `<T>` is the output of `date +%s`:
+
+      ```sh
+      (umask 077 && set -C && command cat -- '<file>.bak-guardrail' > '<file>.bak-guardrail-<T>')
+      ```
+
+      `set -C` refuses a name that exists, and `umask 077` gives the copy mode 0600. The parentheses keep both settings out of your shell. A later `cp -pf` to `<file>.bak-guardrail` never reaches the copy. A non-zero exit means that the copy is missing or incomplete. Then report that output, and name `<file>.bak-guardrail` as the file that holds the original. Else name the copy. In both cases, write no more rows to that file in this run.
 
    Quote every value from a config file as one single-quoted shell word, and write each `'` in it as `'\''`. Pass an `env` pair as one word, `'NAME=value'`, after `env --`. Never let the shell parse a key or a value.
 
@@ -220,6 +228,8 @@ You need macOS or Linux, a POSIX shell, and Rust 1.85 or later.
    4. For each Claude Code row, run `claude mcp get '<name>'`. It reports if the server connects. For a local-scope row, run it in the project folder of the entry.
    5. Give the final report. List each wired row with its probe result, or the reason no probe ran. List the tools that the probe shows as `deny` or `require-approval` in a tainted session. Name the rows that have only probe evidence, and the clients to restart, with the restart from the client reference. For Claude Code, say that a new session is necessary, because the current session keeps the old server.
 
+      End the report with one more list: each row of the step 5.5 table that stays unwrapped. Give each its client, scope, and server, and one of these: its status and note, such as `remote` or `malformed`, `left out by you`, or its step 6 failure and the copy that step 6.3 kept. On macOS, name the Servers tab of the desktop app's Settings window as the place to wrap a server added later.
+
 The binary embeds `policies/default-policy.toml`. To change the rules, copy that file, edit the copy, and pass it with `--policy`. Run `check-policy --policy <file>` on the edited copy before you wire it in.
 
 From a clone, run `cargo install --path . --locked` in place of step 2.
@@ -234,7 +244,7 @@ xattr -dr com.apple.quarantine ~/.local/bin/mcp-guardrail-proxy
 
 ## Client reference
 
-Step 5 reads these files. The Writer and Re-parse columns only name the step 6 writer and its check. Step 6 gives the full steps and the rollback. "Tested" says where the facts in a row come from. A row marked "no" comes from the client's documentation, read on 2026-11-07, and nobody has wired that client with these steps. Check its documentation before you rely on the row. `<file>` in a command of this table is the full path of the row's config file, and `<name>` is the server name.
+Step 5 reads these files. The Writer and Re-parse columns only name the step 6 writer and its check. Step 6 gives the full steps and the rollback. "Tested" says where the facts in a row come from. A row marked "no" comes from the client's documentation, read on 2026-11-07, and nobody has wired that client with these steps. Check its documentation before you rely on the row. `<file>` in a command of this table is the full path of the row's config file, and `<name>` is the server name. The Servers tab of the desktop app reads the same files, except the plugin row, and gives each server the step 5.2 status.
 
 | Client | Config file | Where servers live | Writer | Re-parse | Restart | Tested |
 |---|---|---|---|---|---|---|
@@ -252,7 +262,7 @@ To undo a row, use [Undo](#undo).
 
 ## Undo
 
-Undo needs no earlier backup. It rebuilds each original entry from its wrapped entry, so it works for a row wired in any pass, and it keeps edits made after the wiring. When the request names a client or a server, undo only those rows. A request that names the change needs no approval table.
+Undo needs no earlier backup. It rebuilds each original entry from its wrapped entry, so it works for a row wired in any pass, and it keeps edits made after the wiring. It also covers rows that the desktop app's Servers tab wrapped, because the app writes the same entry as step 6. When the request names a client or a server, undo only those rows. A request that names the change needs no approval table.
 
 Undo uses these values. `<file>` is the full path of the row's config file. `<name>` is a server name. `<record>` is the full path of `~/.local/state/mcp-guardrail/plugin-moves.json`, and each of its keys has the form `<plugin>@<marketplace>`. Undo needs no `<BIN>` and no `<AUDIT>`, because each rebuilt entry holds neither.
 
@@ -297,7 +307,7 @@ Policy files from an earlier version still load, because the policy format does 
 
 - `~/Applications/MCP Guardrail.app`
 - `~/.local/state/mcp-guardrail/`, which holds the audit log and `plugin-moves.json`
-- each `<file>.bak-guardrail`
+- each `<file>.bak-guardrail`. Uninstall names each `<file>.bak-guardrail-<T>` kept copy and leaves it.
 - the binary, at the cargo path of step 3 or at `~/.local/bin/mcp-guardrail-proxy`
 
 The user owns the removal of `~/.local/share/mcp-guardrail/src`, because a clone can hold their own work.
@@ -333,5 +343,5 @@ Uninstall uses one value, `<file>`, the full path of a config file. It needs no 
    rm -rf "$HOME/.local/state/mcp-guardrail"
    ```
 
-8. For each config file in the client reference for this platform, and for `~/.claude/settings.json`, remove `<file>.bak-guardrail` if it exists. Use `command rm -f -- '<file>.bak-guardrail'`, with `<file>` as the full path of the config file.
+8. For each config file in the client reference for this platform, and for `~/.claude/settings.json`, remove `<file>.bak-guardrail` if it exists. Use `command rm -f -- '<file>.bak-guardrail'`, with `<file>` as the full path of the config file. Then list each `<file>.bak-guardrail-<T>` beside that file, where `<T>` is a number. Name each one in the report and leave it, because it can hold a server that a failed write removed.
 9. Run `cargo uninstall tauri-cli` only when the user's request names `tauri-cli`.

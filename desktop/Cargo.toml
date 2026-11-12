@@ -4,7 +4,7 @@ version = "0.3.1"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-description = "Tray app that watches the mcp-guardrail-proxy audit log and checks for updates"
+description = "Tray app that watches the mcp-guardrail-proxy audit log, checks for updates, and has a Servers tab for MCP servers that the proxy does not wrap"
 publish = false
 
 [build-dependencies]
@@ -13,11 +13,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 semver = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+rustix = { version = "1", features = ["process"] }
+tempfile = "3"
+toml_edit = "0.25"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
@@ -27,6 +30,3 @@ objc2-user-notifications = "0.3"
 
 [features]
 self-install = []
-
-[dev-dependencies]
-tempfile = "3"

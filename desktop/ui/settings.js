@@ -10,6 +10,23 @@ function showBanner(element, text) {
   element.textContent = text || "";
 }
 
+function cell(text, className) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (className) td.className = className;
+  return td;
+}
+
+function fillRows(tbody, rows) {
+  tbody.replaceChildren(
+    ...rows.map((cells) => {
+      const tr = document.createElement("tr");
+      tr.append(...cells);
+      return tr;
+    }),
+  );
+}
+
 const tabs = [...document.querySelectorAll('[role="tab"]')];
 
 function selectedTab() {
@@ -26,6 +43,7 @@ function selectTab(name, { focus = false } = {}) {
     byId(tab.getAttribute("aria-controls")).hidden = !selected;
   }
   if (focus) chosen.focus();
+  if (chosen.dataset.tab === "servers") scanServers();
 }
 
 for (const tab of tabs) {
@@ -137,6 +155,110 @@ byId("open-release-page").addEventListener("click", async () => {
     await invoke("open_release_page");
   } catch (error) {
     showBanner(byId("open-error"), `Cannot open the release page: ${error}`);
+  }
+});
+
+// Server names, paths, and reasons come from config files that other programs write.
+let serverRows = [];
+let wrapping = false;
+
+function checkedServerIds() {
+  return [...document.querySelectorAll('#servers-rows input[type="checkbox"]:checked')].map(
+    (box) => serverRows[Number(box.dataset.index)].id,
+  );
+}
+
+function updateWrapButton() {
+  byId("servers-wrap").disabled = wrapping || checkedServerIds().length === 0;
+}
+
+// The id comes from the row index only, never from a server name.
+function wrapCell(row, index) {
+  const td = document.createElement("td");
+  if (!row.selectable) return td;
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.id = `wrap-row-${index}`;
+  box.dataset.index = String(index);
+  box.checked = true;
+  box.setAttribute("aria-label", `Wrap ${row.client} ${row.server}`);
+  box.addEventListener("change", updateWrapButton);
+  td.append(box);
+  return td;
+}
+
+function showResultLines(lines) {
+  byId("servers-results").replaceChildren(
+    ...lines.map((line) => {
+      const li = document.createElement("li");
+      li.textContent = line;
+      return li;
+    }),
+  );
+}
+
+function renderServers(view) {
+  serverRows = view.rows;
+  byId("servers-binary").textContent = view.binary || "not found";
+  byId("servers-audit-log").textContent = view.audit_log_path;
+  const count = view.wrapped === 1 ? "1 server is" : `${view.wrapped} servers are`;
+  byId("servers-summary").textContent = `${count} wrapped in the proxy.`;
+  byId("servers-notes").replaceChildren(
+    ...view.notes.map((note) => {
+      const li = document.createElement("li");
+      li.textContent = note;
+      return li;
+    }),
+  );
+  showBanner(byId("servers-problem"), view.problem);
+  let empty = null;
+  if (view.rows.length === 0) {
+    empty = view.wrapped === 0 ? "The app found no MCP client config." : "Every server it found is wrapped.";
+  }
+  showBanner(byId("servers-empty"), empty);
+  fillRows(
+    byId("servers-rows"),
+    view.rows.map((row, index) => [
+      wrapCell(row, index),
+      cell(row.client),
+      cell(row.scope),
+      cell(row.server),
+      cell(row.status),
+      cell(row.reason || ""),
+    ]),
+  );
+  updateWrapButton();
+}
+
+async function scanServers() {
+  renderServers(await invoke("servers"));
+}
+
+function setWrapping(on) {
+  wrapping = on;
+  byId("servers-scan").disabled = on;
+  updateWrapButton();
+}
+
+// The result lines stay after the scan that follows a wrap, until the next Wrap or Scan press.
+byId("servers-scan").addEventListener("click", async () => {
+  showResultLines([]);
+  await scanServers();
+});
+
+byId("servers-wrap").addEventListener("click", async () => {
+  const rows = checkedServerIds();
+  showResultLines(["Wrapping…"]);
+  setWrapping(true);
+  try {
+    const report = await invoke("wrap_servers", { rows });
+    showResultLines(report.results.map((result) => `${result.client} ${result.server}: ${result.message}`));
+    await scanServers();
+  } catch (message) {
+    showResultLines([]);
+    showBanner(byId("servers-problem"), String(message));
+  } finally {
+    setWrapping(false);
   }
 });
 

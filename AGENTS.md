@@ -17,4 +17,5 @@ A pull request with a manual or pre-merge step is not ready until an agent has r
 - No proxy source or test file (`src`, `tests`) may open a network connection. In the desktop app, only `desktop/src/updater.rs` may. The README's last two development commands grep for both.
 - A new rule or taint source gets a replay scenario in `fixtures/replay-corpus.json` and a row in the README policy tables.
 - New code that remembers state between events and acts on it gets a pure machine, a spec, and a graph walk. [specs/README.md](specs/README.md) has the steps.
+- `desktop/src/clients.rs` and `desktop/src/servers.rs` mirror `INSTALL.md` step 5.2, step 6, and the client reference. A change to one side changes the other in the same commit.
 - Audit lines are the only record of a decision. A change to their fields or to redaction updates the README "Audit log" section in the same commit.
