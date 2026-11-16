@@ -41,6 +41,8 @@ function render() {
   byId("stat-tainted").textContent = sessions.filter((s) => s.taint_level === "Tainted").length;
   byId("stat-calls").textContent = latest.total_calls;
   byId("stat-blocked").textContent = latest.total_blocked;
+  byId("stat-unread").textContent = latest.unread_blocked;
+  byId("mark-read").disabled = latest.unread_blocked === 0;
   fillRows(byId("sessions"), sessions.map((s) => [
     cell(s.session_id), cell(s.taint_level, s.taint_level), cell(s.calls), cell(s.blocked), cell(dateTime(s.last_seen_ms)),
   ]));
@@ -61,6 +63,13 @@ async function refreshSettingsProblem() {
   showBanner(byId("settings-problem"), view.problem);
 }
 
+// The app marks read only the blocked calls this page shows: a call that arrives after this
+// snapshot stays unread.
+function markRead() {
+  if (!latest) return;
+  invoke("mark_blocked_read", { logPath: latest.log_path, seenBlocked: latest.total_blocked });
+}
+
 function openSettings() {
   invoke("open_settings", { tab: "general" });
 }
@@ -75,6 +84,7 @@ document.addEventListener("keydown", (event) => {
 
 byId("open-settings").addEventListener("click", openSettings);
 byId("blocked-only").addEventListener("change", render);
+byId("mark-read").addEventListener("click", markRead);
 listen("dashboard-updated", refresh);
 listen("settings-changed", refreshSettingsProblem);
 refresh();

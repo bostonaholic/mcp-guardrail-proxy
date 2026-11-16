@@ -68,6 +68,8 @@ pub struct Snapshot {
     pub malformed_lines: u64,
     pub total_calls: u64,
     pub total_blocked: u64,
+    /// The blocked calls the person has not marked read. `Monitor` fills it in.
+    pub unread_blocked: u64,
     /// Newest first.
     pub sessions: Vec<SessionSummary>,
     /// Newest first.
@@ -129,6 +131,11 @@ impl Dashboard {
         self.total_calls + self.malformed_lines
     }
 
+    /// Every blocked call so far. The read mark counts from the first of them.
+    pub fn total_blocked(&self) -> u64 {
+        self.total_blocked
+    }
+
     pub fn snapshot(&self, log_path: &str, source_error: Option<String>) -> Snapshot {
         let mut sessions: Vec<SessionSummary> = self.sessions.values().cloned().collect();
         sessions.sort_by_key(|session| std::cmp::Reverse(session.last_seen_ms));
@@ -138,6 +145,7 @@ impl Dashboard {
             malformed_lines: self.malformed_lines,
             total_calls: self.total_calls,
             total_blocked: self.total_blocked,
+            unread_blocked: 0,
             sessions,
             events: self.recent.iter().rev().cloned().collect(),
         }
@@ -155,10 +163,20 @@ pub fn tray_status(snapshot: &Snapshot) -> String {
         .filter(|session| session.taint_level == "Tainted")
         .count();
     format!(
-        "{} sessions, {tainted} tainted, {} blocked",
+        "{} sessions, {tainted} tainted, {} blocked, {} unread",
         snapshot.sessions.len(),
-        snapshot.total_blocked
+        snapshot.total_blocked,
+        snapshot.unread_blocked
     )
+}
+
+/// The text beside the tray icon: the unread count, and no text when every blocked call is
+/// read. No text is an empty string, because macOS keeps the old title when given none.
+pub fn tray_title(snapshot: &Snapshot) -> String {
+    if snapshot.unread_blocked == 0 {
+        return String::new();
+    }
+    snapshot.unread_blocked.to_string()
 }
 
 /// A desktop notification.
@@ -256,7 +274,23 @@ mod tests {
         assert_eq!(snapshot.sessions[1].taint_level, "Tainted");
         assert_eq!(snapshot.sessions[1].blocked, 1);
         assert_eq!(snapshot.events[0].sequence, 3);
-        assert_eq!(tray_status(&snapshot), "2 sessions, 1 tainted, 1 blocked");
+        assert_eq!(
+            tray_status(&snapshot),
+            "2 sessions, 1 tainted, 1 blocked, 0 unread"
+        );
+    }
+
+    #[test]
+    fn the_tray_shows_the_unread_count_only_when_calls_are_unread() {
+        let mut snapshot = Dashboard::default().snapshot("log", None);
+        assert_eq!(tray_title(&snapshot), "", "no text when all are read");
+        snapshot.total_blocked = 5;
+        snapshot.unread_blocked = 3;
+        assert_eq!(tray_title(&snapshot), "3");
+        assert_eq!(
+            tray_status(&snapshot),
+            "0 sessions, 0 tainted, 5 blocked, 3 unread"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Tray app: watches the proxy's audit log, notifies on blocked calls, and checks for its own
 //! updates. It also reads the MCP client config files that `INSTALL.md` lists, for the Servers
-//! tab. It writes its own settings files and, when it installs an update, the new version of
-//! itself. A Wrap press on the Servers tab also writes client config files, their backups, and
+//! tab. It writes its own settings files, the read mark for blocked calls, and, when it installs
+//! an update, the new version of itself. A Wrap press on the Servers tab also writes client config files, their backups, and
 //! kept copies, and creates the audit log's folder and file. The Servers tab starts your login
 //! shell to read its PATH, and a Wrap press starts `mcp-guardrail-proxy check-policy` and, for a
 //! Claude Code row, `claude`. It never
@@ -14,6 +14,7 @@ mod audit;
 mod clients;
 mod monitor;
 mod notify;
+mod read_mark;
 mod servers;
 mod settings;
 #[cfg(test)]
@@ -30,7 +31,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use audit::{Snapshot, tray_status};
+use audit::{Snapshot, tray_status, tray_title};
 use clients::{Platform, ServerId};
 use monitor::Monitor;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,8 @@ const LOG_PATH_VARIABLE: &str = "MCP_GUARDRAIL_AUDIT_LOG";
 /// The path the README's quick start uses, relative to the home folder.
 const DEFAULT_AUDIT_LOG: &str = ".local/state/mcp-guardrail/audit.jsonl";
 const SETTINGS_FILE: &str = "settings.json";
+/// Its own file, so saving the read mark never replaces `settings.json`.
+const READ_MARK_FILE: &str = "read-mark.json";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const TRAY_ID: &str = "main";
 const WATCHER_STOPPED: &str =
@@ -58,6 +61,7 @@ const WATCHER_STOPPED: &str =
 const UPDATE_SETTINGS_DIR: &str = "updates";
 const UPDATES_ITEM_ID: &str = "updates";
 const SETTINGS_ITEM_ID: &str = "settings";
+const MARK_READ_ITEM_ID: &str = "mark-read";
 const SETTINGS_WINDOW: &str = "settings";
 const SETTINGS_PAGE: &str = "settings.html";
 const SETTINGS_TITLE: &str = "Settings";
@@ -101,11 +105,35 @@ impl SettingsTab {
     }
 }
 
+/// What the tray and the windows ask of the poll thread, which owns the watched log.
+enum WatchMessage {
+    Settings(EffectiveSettings),
+    /// Mark read the first `seen_blocked` blocked calls of `log_path`: the log and the count on
+    /// the sender's screen, so a call that screen had not shown stays unread.
+    MarkRead {
+        log_path: String,
+        seen_blocked: u64,
+    },
+}
+
 /// One lock covers the store and the poll thread's channel, so the thread gets settings in the
 /// order the window sets them.
 struct SettingsState {
     store: SettingsStore,
-    sender: Sender<EffectiveSettings>,
+    sender: Sender<WatchMessage>,
+}
+
+/// Sends mark-read requests to the poll thread without the settings lock.
+struct LogInbox(Sender<WatchMessage>);
+
+impl LogInbox {
+    fn mark_read(&self, log_path: String, seen_blocked: u64) {
+        // The send fails only when the poll thread is gone, as the app quits.
+        let _ = self.0.send(WatchMessage::MarkRead {
+            log_path,
+            seen_blocked,
+        });
+    }
 }
 
 /// What the window and the tray item show about updates.
@@ -134,6 +162,12 @@ fn snapshot(state: tauri::State<'_, SharedSnapshot>) -> Snapshot {
     state.lock().expect("the snapshot lock").clone()
 }
 
+/// The dashboard's Mark as read button. The page passes the log and the blocked count it shows.
+#[tauri::command]
+fn mark_blocked_read(log_path: String, seen_blocked: u64, inbox: tauri::State<'_, LogInbox>) {
+    inbox.mark_read(log_path, seen_blocked);
+}
+
 #[tauri::command]
 fn settings(state: tauri::State<'_, Mutex<SettingsState>>) -> SettingsView {
     state.lock().expect("the settings lock").store.view()
@@ -153,7 +187,7 @@ fn set_audit_log_path(
     let _ = app.emit(SETTINGS_CHANGED_EVENT, ());
     state
         .sender
-        .send(state.store.effective())
+        .send(WatchMessage::Settings(state.store.effective()))
         .map_err(|_| WATCHER_STOPPED.to_string())?;
     Ok(state.store.view())
 }
@@ -172,7 +206,7 @@ fn set_notifications(
     let _ = app.emit(SETTINGS_CHANGED_EVENT, ());
     state
         .sender
-        .send(state.store.effective())
+        .send(WatchMessage::Settings(state.store.effective()))
         .map_err(|_| WATCHER_STOPPED.to_string())?;
     Ok(state.store.view())
 }
@@ -357,14 +391,28 @@ fn show_settings_from_tray(app: &AppHandle, tab: SettingsTab) {
     }
 }
 
-/// The tray items whose text changes after launch.
-struct TrayItems {
+/// The tray items that follow the watched log.
+struct LogItems {
     status: MenuItem<tauri::Wry>,
+    mark_read: MenuItem<tauri::Wry>,
+}
+
+/// The tray items that change after launch.
+struct TrayItems {
+    log: LogItems,
     updates: MenuItem<tauri::Wry>,
 }
 
-fn build_tray(app: &AppHandle, status: &str, updates: TrayItem) -> tauri::Result<TrayItems> {
-    let status_item = MenuItem::with_id(app, "status", status, false, None::<&str>)?;
+fn build_tray(app: &AppHandle, first: &Snapshot, updates: TrayItem) -> tauri::Result<TrayItems> {
+    let status = tray_status(first);
+    let status_item = MenuItem::with_id(app, "status", &status, false, None::<&str>)?;
+    let mark_read_item = MenuItem::with_id(
+        app,
+        MARK_READ_ITEM_ID,
+        "Mark Blocked Calls as Read",
+        first.unread_blocked > 0,
+        None::<&str>,
+    )?;
     let updates_item = MenuItem::with_id(
         app,
         UPDATES_ITEM_ID,
@@ -377,14 +425,22 @@ fn build_tray(app: &AppHandle, status: &str, updates: TrayItem) -> tauri::Result
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&status_item, &updates_item, &settings_item, &open, &quit],
+        &[
+            &status_item,
+            &mark_read_item,
+            &updates_item,
+            &settings_item,
+            &open,
+            &quit,
+        ],
     )?;
-    TrayIconBuilder::with_id(TRAY_ID)
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(tauri::include_image!("icons/tray.png"))
         .icon_as_template(true)
-        .tooltip(status)
+        .tooltip(&status)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
+            MARK_READ_ITEM_ID => mark_read_from_tray(app),
             UPDATES_ITEM_ID => click_updates_item(app),
             SETTINGS_ITEM_ID => show_settings_from_tray(app, SettingsTab::General),
             "open" => show_main_window(app),
@@ -392,10 +448,24 @@ fn build_tray(app: &AppHandle, status: &str, updates: TrayItem) -> tauri::Result
             _ => {}
         })
         .build(app)?;
+    tray.set_title(Some(tray_title(first)))?;
     Ok(TrayItems {
-        status: status_item,
+        log: LogItems {
+            status: status_item,
+            mark_read: mark_read_item,
+        },
         updates: updates_item,
     })
+}
+
+/// Marks read the blocked calls the tray showed when the person clicked.
+fn mark_read_from_tray(app: &AppHandle) {
+    let (log_path, seen_blocked) = {
+        let shown = app.state::<SharedSnapshot>();
+        let shown = shown.lock().expect("the snapshot lock");
+        (shown.log_path.clone(), shown.total_blocked)
+    };
+    app.state::<LogInbox>().mark_read(log_path, seen_blocked);
 }
 
 /// A tray check also opens the Updates tab, so its result reaches the person.
@@ -417,41 +487,53 @@ fn click_updates_item(app: &AppHandle) {
     }
 }
 
-fn publish(
-    app: &AppHandle,
-    shared: &SharedSnapshot,
-    status_item: &MenuItem<tauri::Wry>,
-    next: Snapshot,
-) {
+/// The tray changes before the snapshot lock is taken. Tray and menu item calls wait for the
+/// main thread, and the main thread takes that lock in the tray handler and the commands.
+fn publish(app: &AppHandle, shared: &SharedSnapshot, items: &LogItems, next: Snapshot) {
     let status = tray_status(&next);
-    let _ = status_item.set_text(&status);
+    let _ = items.status.set_text(&status);
+    let _ = items.mark_read.set_enabled(next.unread_blocked > 0);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(&status));
+        let _ = tray.set_title(Some(tray_title(&next)));
     }
     *shared.lock().expect("the snapshot lock") = next;
     let _ = app.emit("dashboard-updated", ());
 }
 
-/// Polls until the settings channel closes. A settings message applies at once, between two
-/// polls. A read error stays on screen, and polling continues so the app recovers.
+/// Polls until the message channel closes. A message applies at once, between two polls. A
+/// read error stays on screen, and polling continues so the app recovers.
 fn watch_log(
     app: AppHandle,
     shared: SharedSnapshot,
-    status_item: MenuItem<tauri::Wry>,
+    items: LogItems,
     mut monitor: Monitor,
-    settings: Receiver<EffectiveSettings>,
+    messages: Receiver<WatchMessage>,
 ) {
     loop {
-        match settings.recv_timeout(POLL_INTERVAL) {
-            Ok(next) => {
+        match messages.recv_timeout(POLL_INTERVAL) {
+            Ok(WatchMessage::Settings(next)) => {
                 if let Some(snapshot) = monitor.apply(&next) {
-                    publish(&app, &shared, &status_item, snapshot);
+                    publish(&app, &shared, &items, snapshot);
+                }
+            }
+            Ok(WatchMessage::MarkRead {
+                log_path,
+                seen_blocked,
+            }) => {
+                if let Some(marked) = monitor.mark_read(&log_path, seen_blocked) {
+                    if let Some(error) = marked.save_error {
+                        eprintln!(
+                            "mcp-guardrail-desktop: the read mark could not be saved: {error}"
+                        );
+                    }
+                    publish(&app, &shared, &items, marked.snapshot);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
                 let polled = monitor.poll();
                 if let Some(snapshot) = polled.snapshot {
-                    publish(&app, &shared, &status_item, snapshot);
+                    publish(&app, &shared, &items, snapshot);
                 }
                 if let Some(alert) = polled.alert {
                     notify::send(&app, &alert);
@@ -572,6 +654,7 @@ fn main() {
         .plugin(updater::plugin())
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            mark_blocked_read,
             settings,
             set_audit_log_path,
             set_notifications,
@@ -604,7 +687,8 @@ fn main() {
                 std::env::var_os(LOG_PATH_VARIABLE).map(PathBuf::from),
                 app.path().home_dir()?.join(DEFAULT_AUDIT_LOG),
             );
-            let (monitor, first) = Monitor::open(&store.effective());
+            let (monitor, first) =
+                Monitor::open(&store.effective(), &config_dir.join(READ_MARK_FILE));
 
             let update_settings_dir = config_dir.join(UPDATE_SETTINGS_DIR);
             let (saved, settings_note) = update_settings::load(&update_settings_dir);
@@ -629,17 +713,18 @@ fn main() {
             app.manage(updates.clone());
             app.manage(UpdateInbox(inbox.clone()));
 
-            let tray = build_tray(app.handle(), &tray_status(&first), first_tray)?;
+            let tray = build_tray(app.handle(), &first, first_tray)?;
             let shared: SharedSnapshot = Arc::new(Mutex::new(first));
             app.manage(shared.clone());
             let (sender, receiver) = mpsc::channel();
+            app.manage(LogInbox(sender.clone()));
             app.manage(Mutex::new(SettingsState { store, sender }));
             app.manage(WrapLock(Arc::new(Mutex::new(()))));
 
             let handle = app.handle().clone();
-            let status_item = tray.status;
+            let log_items = tray.log;
             std::thread::spawn(move || {
-                watch_log(handle, shared, status_item, monitor, receiver);
+                watch_log(handle, shared, log_items, monitor, receiver);
             });
 
             let update_watch = UpdateWatch {

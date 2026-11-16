@@ -219,7 +219,7 @@ fn effective_path(variable: Option<&Path>, saved: &SavedSettings, default_path: 
 /// Replaces `file` by a rename, so a crash leaves the old or the new file whole, never a torn
 /// one. The rename also replaces a symlink at `file` and never writes through it. The pid in
 /// the temp name keeps two instances of the app off one temp file.
-fn write_atomically(file: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomically(file: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(folder) = file.parent() {
         fs::create_dir_all(folder)?;
     }

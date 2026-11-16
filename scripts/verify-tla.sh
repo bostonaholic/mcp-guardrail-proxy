@@ -34,6 +34,7 @@ SessionLifecycleBroken Temporal properties were violated
 AuditLogTailBroken Invariant CursorTracksCurrentFile is violated
 DashboardWatchBroken Invariant ScreenIsCurrent is violated
 DashboardWatchHistoryBroken Invariant HistoryStaysSilent is violated
+DashboardWatchUnreadBroken Invariant MarkFitsTheLog is violated
 UpdateCheckBroken Invariant NoAutomaticRequestWhenOff is violated"
 # The walks of the committed graphs that the root crate runs.
 GRAPH_WALK_TESTS="machines::framer::tests::framer_matches_every_edge_of_the_spec

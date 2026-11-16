@@ -1,8 +1,8 @@
 # MCP Guardrail desktop
 
-A tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked. It also checks for its own updates.
+A tray app that watches the proxy's audit log. It shows sessions and recent calls, and sends a notification when a call is blocked. The tray icon shows how many blocked calls you have not marked read. The app also checks for its own updates.
 
-The app reads the log. For its Servers tab, it also reads the MCP client config files that [INSTALL.md](../INSTALL.md#client-reference) lists. It writes its own settings files, plus the new version of itself when it installs an update. When you press Wrap on the Servers tab, it also writes the client config files of the rows you selected, a backup and a kept copy of each, and the audit log's folder and file. The tab starts your login shell to read its `PATH`, and a wrap first runs `mcp-guardrail-proxy check-policy`. It changes `~/.claude.json` only through the `claude` command. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
+The app reads the log. For its Servers tab, it also reads the MCP client config files that [INSTALL.md](../INSTALL.md#client-reference) lists. It writes its own settings files and its read mark for blocked calls, plus the new version of itself when it installs an update. When you press Wrap on the Servers tab, it also writes the client config files of the rows you selected, a backup and a kept copy of each, and the audit log's folder and file. The tab starts your login shell to read its `PATH`, and a wrap first runs `mcp-guardrail-proxy check-policy`. It changes `~/.claude.json` only through the `claude` command. It never talks to a proxy, so it cannot approve a call or weaken a decision, and proxies run the same when it is closed. It contacts github.com only to check for updates and to download them. It is a separate crate, outside the proxy's build, so its dependencies do not reach the proxy.
 
 ## Run it
 
@@ -55,6 +55,21 @@ At launch, `MCP_GUARDRAIL_AUDIT_LOG` wins when it is set. Then comes the saved p
 Clear the "Notify me when a call is blocked" checkbox to stop notifications. The table and the tray still update. Alerts that the app drops while the box is clear never replay when you check it again. The checkbox works while `MCP_GUARDRAIL_AUDIT_LOG` is set.
 
 If the app cannot read `settings.json` at launch, it uses the defaults and shows a banner on the dashboard that names the file. The next save replaces the file. To reset the settings, delete `settings.json`.
+
+## Unread blocked calls
+
+The tray icon shows a number beside it: the blocked calls you have not marked read. A blocked call is one the proxy did not forward, so it is a denied call or one that waits for approval. The number goes away when every blocked call is read. The first line of the tray menu and the dashboard's stats show the same count.
+
+To mark the blocked calls read, do one of these:
+
+- Click "Mark Blocked Calls as Read" in the tray.
+- Click Mark as read on the dashboard.
+
+Both are disabled when no blocked call is unread. A mark covers the blocked calls your screen showed when you clicked. A call that arrives in that moment stays unread.
+
+The count survives a relaunch. Calls blocked while the app was closed count as unread at the next launch, and they raise no notification, like the rest of the history. The first launch of a version with this count shows every blocked call in the log as unread, because you have marked none.
+
+The app saves the read mark to `read-mark.json`, next to `settings.json`. The file names the log and holds how many of its blocked calls are read, counted from the first one. The app keeps one mark, for one log. After you change the audit log path, every blocked call in the new log is unread, and the next mark replaces the old log's mark. If the save fails, the mark holds until the app quits, and the app writes the reason to stderr. To make every blocked call unread again, quit the app and delete `read-mark.json`.
 
 ## Servers
 
@@ -203,6 +218,9 @@ On the Updates tab, Install downloads and installs the version the last check fo
 - An audit sink failure is invisible here. The failed line goes to stderr as `audit-fallback:`, not to the log.
 - Lines already in the log at launch load as history and raise no notification. If the first read fails, the first read that works counts as that launch read.
 - A replacement log that grows past the old read position between two polls goes unnoticed, because the app polls by size. Its earlier lines are lost to the dashboard. The proxy only appends, so only an outside rotation can cause this.
+- The read mark is a count, because audit lines have no id. If the log is replaced while the app is closed, and the new log already holds at least as many blocked calls as the mark at the next launch, the app counts that many of its blocked calls as read. A new log with fewer blocked calls than the mark starts with all of them unread. Only an outside rotation can cause this.
+- A mark covers every blocked call the log held, including calls older than the 500 that the Recent calls table lists.
+- Two app processes that mark calls read can lose one mark, because the later save replaces the file.
 
 The app leaves out `arguments`, because redaction matches known patterns and a secret could survive it.
 
@@ -226,4 +244,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/update.rs` is the pure update machine, which decides each update check, install, and notice. `src/tail.rs`, `src/watch.rs`, and `src/update.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/clients.rs` holds the client table and the scan rules of `INSTALL.md` step 5.2, and does no I/O. `src/servers.rs` reads the client config files for the Servers tab and writes the rows that Wrap wraps. `src/settings.rs` holds the app's own settings. `src/update_settings.rs` reads and writes the update settings file. `src/updater.rs` is the only module that reaches the network. `src/notify.rs` sends the notifications. `src/main.rs` holds the tray, the two windows, the commands, the poll thread, and the update thread. `ui/index.html` and `ui/app.js` are the dashboard. `ui/settings.html` and `ui/settings.js` are the Settings window. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
+`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify, and keeps the read mark that gives the unread count. `src/read_mark.rs` reads and writes the read mark file. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/update.rs` is the pure update machine, which decides each update check, install, and notice. `src/tail.rs`, `src/watch.rs`, and `src/update.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/clients.rs` holds the client table and the scan rules of `INSTALL.md` step 5.2, and does no I/O. `src/servers.rs` reads the client config files for the Servers tab and writes the rows that Wrap wraps. `src/settings.rs` holds the app's own settings. `src/update_settings.rs` reads and writes the update settings file. `src/updater.rs` is the only module that reaches the network. `src/notify.rs` sends the notifications. `src/main.rs` holds the tray, the two windows, the commands, the poll thread, and the update thread. `ui/index.html` and `ui/app.js` are the dashboard. `ui/settings.html` and `ui/settings.js` are the Settings window. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.

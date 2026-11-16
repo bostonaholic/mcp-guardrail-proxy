@@ -11,9 +11,10 @@ HistoryCountsAsLive ==
   /\ phase = "LoadingHistory"
   /\ error /= "None"
   /\ revision < MaxRevision
-  /\ Settle("None", revision + 1)
+  /\ Settle("None", revision + 1, blocked, MarkAfter(blocked))
   /\ mayAlert' = TRUE
   /\ alertedOnHistory' = TRUE
+  /\ markedRead' = MarkAfter(blocked)
   /\ phase' = "Live"
 
 BrokenSpec == Init /\ [][Next \/ HistoryCountsAsLive]_vars

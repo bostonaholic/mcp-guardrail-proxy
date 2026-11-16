@@ -4,6 +4,14 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 ## Unreleased
 
+### Added
+
+- The desktop app's tray icon now shows how many blocked calls you have not marked read. Click "Mark Blocked Calls as Read" in the tray, or Mark as read on the dashboard, to clear the count. The count survives a relaunch, and calls blocked while the app was closed count as unread. The first launch shows every blocked call in the log as unread.
+
+### Changed
+
+- The first line of the desktop app's tray menu now ends with the unread count.
+
 ## 0.4.0 - 2026-11-12
 
 ### Changed

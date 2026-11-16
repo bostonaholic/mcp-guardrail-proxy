@@ -13,7 +13,7 @@ Every piece of code that remembers something between events and changes what it 
 | Stderr splitter | `LineSplitter`, `src/machines/splitter.rs` | `LineSplitter` | No byte is lost or invented, and lines stay within the cap. |
 | Line boundary | `LineBoundary`, `src/telemetry.rs` | `LineWriter` | A torn write never joins the next line, so an audit line stays whole on a shared stream. |
 | Log cursor | `TailCursor`, `desktop/src/tail.rs` | `AuditLogTail` | After a poll the cursor counts bytes of the current file, so no line is skipped. Read the assumption at the top of the spec. |
-| Poll gate | `Watch`, `desktop/src/watch.rs` | `DashboardWatch` | After a poll the screen is current, and history never raises a notification. |
+| Poll gate | `Watch`, `desktop/src/watch.rs` | `DashboardWatch` | After a poll or a mark the screen is current, and history never raises a notification. The read mark never passes the log's blocked calls, so each new blocked call is unread. No poll moves the mark back, and only a mark that moved asks for a save. |
 | Update check | `UpdateMachine`, `desktop/src/update.rs` | `UpdateCheck` | One request runs at a time, and Off makes no automatic request. Each version gets at most one notice and one automatic install. An install starts only when this copy can install and the person or Install mode asked for it. |
 
 `CallJudgment` refines the per-call phases of `McpGuardrailTaint` at the grain of the code. `McpGuardrailTaint` stays the abstract proof of the taint rule, so its state count and Rust mirror do not change.
@@ -28,7 +28,7 @@ For every spec except `McpGuardrailTaint`, which has the hand-written mirror in 
 
 So a change to the `.tla` file fails step 2 until the graph is regenerated, and a change to the Rust machine fails step 3. Tier 3 of the script has no TLC, so it runs step 3 only.
 
-Each spec has a `*Broken.tla` variant that must fail, which proves the check can fail. The broken variants of `SessionLifecycle`, `AuditLogTail`, and `DashboardWatch` are the behavior of the code before its machine was explicit:
+Each spec has a `*Broken.tla` variant that must fail, which proves the check can fail. The broken variants of `SessionLifecycle`, `AuditLogTail`, and `DashboardWatch` are the behavior of the code before its machine was explicit, except `DashboardWatchUnreadBroken`, which records a rule the code never had:
 
 | Variant | The bug it records |
 |---|---|
@@ -36,16 +36,18 @@ Each spec has a `*Broken.tla` variant that must fail, which proves the check can
 | `AuditLogTailBroken` | A poll that found no file kept the old offset, so a new log lost its first lines. |
 | `DashboardWatchBroken` | A launch read's error banner stayed after the file recovered, and a malformed line reached the screen only with the next audit event. |
 | `DashboardWatchHistoryBroken` | After a failed launch read, the first read that worked sent a notification for history. |
+| `DashboardWatchUnreadBroken` | The history read trusts a saved read mark above the log's blocked calls. That mark was saved for a log that has since been replaced, and it hides the new log's next blocked calls. |
 
 ## What this does not cover
 
 - The walks check the pure machines. The driver that feeds them, `run_session` in `src/proxy.rs`, is covered by `tests/integration_test.rs`.
 - The specs feed one byte at a time to `LineFramer` and `LineSplitter`, and the proxy feeds buffers. `chunk_size_never_changes_the_lines` covers the difference.
-- The bounds are small: `Cap = 2` for the line machines, `MaxLen = 3` and `MaxGen = 3` for the cursor. No bound applies to `SessionLifecycle`, `CallJudgment`, or `LineWriter`, whose state spaces are finite as written.
+- The bounds are small: `Cap = 2` for the line machines, `MaxLen = 3` and `MaxGen = 3` for the cursor, `MaxRevision = 3` and `MaxBlocked = 2` for the poll gate. No bound applies to `SessionLifecycle`, `CallJudgment`, or `LineWriter`, whose state spaces are finite as written.
 - `SessionLifecycle` assumes a live host reads its output. A host that holds stdout open and stops reading stalls the writer, as it always has.
 - A broken variant shows that one invariant per spec can fail, not all of them.
 - The `UpdateCheck` walk checks `UpdateMachine` only. `desktop/src/updater.rs` and the updater plugin's own decisions, such as the version compare and the signature check, are outside it.
 - `UpdateCheck` models two versions, `V1` below `V2`.
+- The `DashboardWatch` walk checks `Watch` only. `Monitor` loads and saves the read mark file and drops a mark for another log. Unit tests in `desktop/src/monitor.rs` and `desktop/src/read_mark.rs` cover both. A saved mark at or below the log's blocked calls is trusted, so a replaced log that already holds that many goes unnoticed. `desktop/README.md` lists this limit.
 - The spec has no clock and offers only a mode other than the current one. Unit tests in `desktop/src/update.rs` cover the check schedule and a repeated choice of the current mode.
 
 ## Looked at and left out
@@ -65,7 +67,8 @@ Each spec has a `*Broken.tla` variant that must fail, which proves the check can
 | The wrap lock in `desktop/src/servers.rs` | One `Mutex` for the length of one wrap. A second wrap fails at once and changes nothing. A poisoned lock counts as free, because it guards no data. |
 | The set of stopped files in one wrap, in `run_rows` in `desktop/src/servers.rs` | It starts empty, only grows, and goes away when the wrap returns. Its one rule skips a later row of a file in the set. It lives for one call over a list fixed at the start, and only that call's own rows add to it, so no outside event reaches it, like the probe handshake. Unit tests over lists of row ends cover each order. |
 | Kept copies on disk, `<file>.bak-guardrail-<T>` | No later wrap reads them. A name that exists only fails the `create_new` of a new kept copy, and that row fails before its change. |
-| `Monitor` in `desktop/src/monitor.rs` | Its own state is the watched path and the notifications switch. A message compares one path with it once, like `latest`, and replaces the switch. The switch gates whole polls and keeps no record of dropped alerts. `TailCursor` and `Watch` keep the event-order rules under their own specs. |
+| `Monitor` in `desktop/src/monitor.rs` | Its own state is the watched path, the notifications switch, and the read mark file's path, which never changes. A message compares one path with it once, like `latest`, and replaces the switch. The switch gates whole polls and keeps no record of dropped alerts. `TailCursor` and `Watch` keep the event-order rules under their own specs. |
+| `read-mark.json` on disk | One number for one log path. `Monitor` reads it once when it opens a log and hands it to `Watch`, which settles it under `DashboardWatch`. Each save replaces the file. |
 | `SettingsStore` in `desktop/src/settings.rs` | It holds the last saved values and the problem from the launch load, which the next save clears. Each save replaces the values, and no rule reads the order of earlier events. |
 | Window shown or hidden, notification permission | Held by Tauri and the OS, not by this code. |
 

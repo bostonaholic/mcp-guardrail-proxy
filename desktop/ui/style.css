@@ -20,7 +20,7 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 header p { margin: 2px 0 0; font-size: 12px; overflow-wrap: anywhere; }
 .note { margin: 0 0 8px; font-size: 12px; }
 .banner { background: var(--banner); padding: 8px 12px; border-radius: 6px; margin: 12px 0 0; }
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 16px; }
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 16px; }
 .stats div { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .stats strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
 .stats span { color: var(--muted); font-size: 12px; }
@@ -35,6 +35,7 @@ tr:last-child td { border-bottom: 0; }
 .calls .rule { width: 26%; }
 .setting { display: block; margin-top: 12px; }
 .filter { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+#mark-read { margin-bottom: 8px; }
 .deny, .Tainted { color: var(--deny); font-weight: 600; }
 .require-approval { color: var(--approve); font-weight: 600; }
 .allow { color: var(--allow); }

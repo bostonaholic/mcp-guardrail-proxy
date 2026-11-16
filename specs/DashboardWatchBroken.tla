@@ -9,20 +9,25 @@
 EXTENDS DashboardWatch
 
 MalformedLineUnpublished ==
+  /\ phase /= "Starting"
   /\ revision < MaxRevision
   /\ error' = "None"
   /\ shownError' = "None"
   /\ revision' = revision + 1
   /\ published' = FALSE
   /\ mayAlert' = FALSE
-  /\ UNCHANGED <<phase, shownRevision, alertedOnHistory>>
+  /\ saveRequested' = FALSE
+  /\ UNCHANGED <<phase, shownRevision, shownUnread, blocked, savedCount, readBlocked,
+                 alertedOnHistory, markedRead>>
 
 BannerOutlivesError ==
   /\ shownError /= "None"
   /\ error' = "None"
   /\ published' = FALSE
   /\ mayAlert' = FALSE
-  /\ UNCHANGED <<phase, shownError, shownRevision, revision, alertedOnHistory>>
+  /\ saveRequested' = FALSE
+  /\ UNCHANGED <<phase, shownError, shownRevision, shownUnread, revision, blocked,
+                 savedCount, readBlocked, alertedOnHistory, markedRead>>
 
 BrokenSpec == Init /\ [][Next \/ MalformedLineUnpublished \/ BannerOutlivesError]_vars
 

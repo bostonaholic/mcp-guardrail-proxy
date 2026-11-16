@@ -21,6 +21,7 @@
       <div><strong id="stat-tainted">0</strong><span>tainted</span></div>
       <div><strong id="stat-calls">0</strong><span>calls</span></div>
       <div><strong id="stat-blocked">0</strong><span>blocked</span></div>
+      <div><strong id="stat-unread">0</strong><span>unread</span></div>
     </section>
     <h2>Sessions</h2>
     <p class="muted note">Taint shows the level before each session's latest call. Ended sessions stay listed.</p>
@@ -30,6 +31,7 @@
     </table>
     <h2>Recent calls</h2>
     <label class="filter"><input id="blocked-only" type="checkbox" /> Blocked only</label>
+    <button type="button" id="mark-read" disabled>Mark as read</button>
     <table class="calls">
       <colgroup><col class="time" /><col class="tool" /><col class="decision" /><col class="rule" /><col /></colgroup>
       <thead><tr><th>Time</th><th>Tool</th><th>Decision</th><th>Rule</th><th>Reason</th></tr></thead>
