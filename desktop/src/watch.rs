@@ -1,5 +1,7 @@
-//! What each poll of the log does, and how many blocked calls are unread, mirrored from
+//! What each poll of the log does, and which blocked calls are unread, mirrored from
 //! `specs/DashboardWatch.tla`. Pure: no I/O, no UI.
+
+use crate::read_mark::ReadMark;
 
 /// Whether the log's history has loaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,16 +23,16 @@ pub struct PollActions {
 
 /// What a request to mark blocked calls read must do. A request that moves nothing asks for
 /// nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MarkActions {
-    /// The unread count on screen is out of date.
+    /// The unread calls on screen are out of date.
     pub publish: bool,
     /// The read mark to save, so the next launch starts from it.
-    pub save: Option<u64>,
+    pub save: Option<ReadMark>,
 }
 
 /// Remembers what is on screen, so a poll publishes exactly when something changed, and
-/// remembers the read mark: how many of the log's blocked calls the person has marked read.
+/// remembers the read mark: which of the log's blocked calls the person has marked read.
 #[derive(Clone, Debug)]
 pub struct Watch {
     phase: WatchPhase,
@@ -38,16 +40,16 @@ pub struct Watch {
     shown_error: Option<String>,
     shown_unread: u64,
     /// The read mark an earlier run saved for this log. The history read settles it.
-    saved_read: u64,
+    saved_read: ReadMark,
     /// The blocked calls the dashboard had counted at the last read that worked.
     blocked: u64,
-    read_blocked: u64,
+    read: ReadMark,
 }
 
 impl Watch {
     /// A watch before the first read, with an empty dashboard on screen. `saved_read` is the
-    /// read mark an earlier run saved for this log, or 0 for none.
-    pub fn new(saved_read: u64) -> Self {
+    /// read mark an earlier run saved for this log, or an empty mark for none.
+    pub fn new(saved_read: ReadMark) -> Self {
         Self {
             phase: WatchPhase::LoadingHistory,
             shown_revision: 0,
@@ -55,7 +57,7 @@ impl Watch {
             shown_unread: 0,
             saved_read,
             blocked: 0,
-            read_blocked: 0,
+            read: ReadMark::default(),
         }
     }
 
@@ -65,12 +67,13 @@ impl Watch {
         let read_worked = error.is_none();
         if read_worked {
             if self.phase == WatchPhase::LoadingHistory {
-                // A saved mark above the log's count was saved for a log that has since been
-                // replaced. Kept, it would hide this log's next blocked calls.
-                self.read_blocked = if self.saved_read <= blocked {
-                    self.saved_read
+                // A saved mark that names a call this log does not hold was saved for a log
+                // that has since been replaced. Kept, it would hide this log's blocked calls
+                // that take those places.
+                self.read = if self.saved_read.fits(blocked) {
+                    self.saved_read.clone()
                 } else {
-                    0
+                    ReadMark::default()
                 };
             }
             self.blocked = blocked;
@@ -89,27 +92,33 @@ impl Watch {
         PollActions { publish, may_alert }
     }
 
-    /// Marks read the first `seen_blocked` blocked calls, the count the person's screen showed.
-    /// The mark only moves forward, and only within the log's count, so a blocked call that
-    /// arrived after that screen stays unread.
-    pub fn mark_read(&mut self, seen_blocked: u64) -> MarkActions {
-        if seen_blocked <= self.read_blocked || seen_blocked > self.blocked {
+    /// Marks read the blocked calls `seen` names, which the person's screen showed: the rows
+    /// they selected, or every blocked call that screen counted. The mark only grows, and only
+    /// within the log's calls, so a blocked call that arrived after that screen stays unread.
+    pub fn mark_read(&mut self, seen: &ReadMark) -> MarkActions {
+        let next = self.read.union(seen);
+        if !seen.fits(self.blocked) || next == self.read {
             return MarkActions {
                 publish: false,
                 save: None,
             };
         }
-        self.read_blocked = seen_blocked;
+        self.read = next;
         self.shown_unread = self.unread();
         MarkActions {
             publish: true,
-            save: Some(seen_blocked),
+            save: Some(self.read.clone()),
         }
     }
 
-    /// The blocked calls not marked read.
+    /// How many blocked calls are not marked read.
     pub fn unread(&self) -> u64 {
-        self.blocked.saturating_sub(self.read_blocked)
+        self.blocked.saturating_sub(self.read.count())
+    }
+
+    /// The blocked calls marked read.
+    pub fn read(&self) -> &ReadMark {
+        &self.read
     }
 
     /// The error on screen, for a snapshot published between two polls.
@@ -134,16 +143,44 @@ mod tests {
         revision: u64,
         publish: bool,
         may_alert: bool,
-        save: Option<u64>,
+        save: Option<ReadMark>,
     }
 
     fn number(step: &Step<'_>, name: &str) -> u64 {
         step.to[name].parse().expect("a number in the spec state")
     }
 
+    /// The calls of a TLA+ set as the graph prints it, such as `{1,2}`.
+    fn calls(step: &Step<'_>, name: &str) -> Vec<u64> {
+        step.to[name]
+            .trim_matches(['{', '}'])
+            .split(',')
+            .filter(|call| !call.is_empty())
+            .map(|call| call.parse().expect("a number in the spec set"))
+            .collect()
+    }
+
+    /// A mark as the graph prints a TLA+ set.
+    fn tla_set(mark: &ReadMark) -> String {
+        let calls: Vec<String> = (1..=MAX_BLOCKED + 1)
+            .filter(|call| mark.contains(*call))
+            .map(|call| call.to_string())
+            .collect();
+        format!("{{{}}}", calls.join(","))
+    }
+
+    /// Every set of the calls 1 to `MAX_BLOCKED + 1`, one past what the spec's log can hold.
+    fn every_mark() -> Vec<ReadMark> {
+        (0..1u64 << (MAX_BLOCKED + 1))
+            .map(|bits| {
+                ReadMark::of((1..=MAX_BLOCKED + 1).filter(|call| bits >> (call - 1) & 1 == 1))
+            })
+            .collect()
+    }
+
     fn apply(walked: &mut Walked, step: &Step<'_>) {
         if step.action == "Open" {
-            walked.watch = Some(Watch::new(number(step, "savedCount")));
+            walked.watch = Some(Watch::new(ReadMark::of(calls(step, "savedRead"))));
             return;
         }
         let watch = walked.watch.as_mut().expect("Open comes first");
@@ -165,16 +202,40 @@ mod tests {
             return;
         }
         let actions = if step.action == "MarkRead" {
-            watch.mark_read(number(step, "readBlocked"))
+            let next = ReadMark::of(calls(step, "readCalls"));
+            // The spec state names the mark after the step, so the request is the calls it
+            // added. When the result is the log's first calls, a "mark all" gets there too.
+            let all = ReadMark::through(next.count());
+            if next == all {
+                let mut marked_all = watch.clone();
+                marked_all.mark_read(&all);
+                assert_eq!(
+                    marked_all.read,
+                    next,
+                    "a mark of the first {}",
+                    next.count()
+                );
+            }
+            let added = ReadMark::of(
+                (1..=MAX_BLOCKED)
+                    .filter(|call| next.contains(*call) && !watch.read.contains(*call)),
+            );
+            watch.mark_read(&added)
         } else {
-            // Every count that moves nothing is ignored the same way.
+            // Every mark that adds nothing, or names a call the log never held, is ignored
+            // the same way.
             let ignored = MarkActions {
                 publish: false,
                 save: None,
             };
-            for seen in 0..=MAX_BLOCKED + 1 {
-                if seen <= watch.read_blocked || seen > watch.blocked {
-                    assert_eq!(watch.mark_read(seen), ignored, "a mark at {seen}");
+            for seen in every_mark() {
+                if !seen.fits(watch.blocked) || watch.read.union(&seen) == watch.read {
+                    assert_eq!(
+                        watch.mark_read(&seen),
+                        ignored,
+                        "a mark of {}",
+                        tla_set(&seen)
+                    );
                 }
             }
             ignored
@@ -191,9 +252,9 @@ mod tests {
                 ("shownError", "None".to_string()),
                 ("shownRevision", "0".to_string()),
                 ("shownUnread", "0".to_string()),
-                ("savedCount", "0".to_string()),
+                ("savedRead", "{}".to_string()),
                 ("blocked", "0".to_string()),
-                ("readBlocked", "0".to_string()),
+                ("readCalls", "{}".to_string()),
             ],
             Some(watch) => vec![
                 ("phase", format!("{:?}", watch.phase)),
@@ -203,9 +264,9 @@ mod tests {
                 ),
                 ("shownRevision", watch.shown_revision.to_string()),
                 ("shownUnread", watch.shown_unread.to_string()),
-                ("savedCount", watch.saved_read.to_string()),
+                ("savedRead", tla_set(&watch.saved_read)),
                 ("blocked", watch.blocked.to_string()),
-                ("readBlocked", watch.read_blocked.to_string()),
+                ("readCalls", tla_set(&watch.read)),
             ],
         };
         vars.push(("published", tla_bool(walked.publish)));
@@ -226,8 +287,8 @@ mod tests {
                 save: None,
             },
             |walked| {
-                if let (Some(watch), Some(saved)) = (&walked.watch, walked.save) {
-                    assert_eq!(saved, watch.read_blocked, "the save holds the new mark");
+                if let (Some(watch), Some(saved)) = (&walked.watch, &walked.save) {
+                    assert_eq!(saved, &watch.read, "the save holds the new mark");
                 }
                 project(walked)
             },
@@ -238,7 +299,7 @@ mod tests {
 
     #[test]
     fn an_error_from_the_launch_read_clears_when_the_file_recovers() {
-        let mut watch = Watch::new(0);
+        let mut watch = Watch::new(ReadMark::default());
         watch.after_poll(0, 0, Some("permission denied"));
         let recovered = watch.after_poll(0, 0, None);
         assert!(recovered.publish, "the banner must go away");
@@ -246,14 +307,14 @@ mod tests {
 
     #[test]
     fn a_malformed_line_alone_reaches_the_screen() {
-        let mut watch = Watch::new(0);
+        let mut watch = Watch::new(ReadMark::default());
         watch.after_poll(0, 0, None);
         assert!(watch.after_poll(1, 0, None).publish);
     }
 
     #[test]
     fn history_after_a_failed_launch_read_stays_silent() {
-        let mut watch = Watch::new(0);
+        let mut watch = Watch::new(ReadMark::default());
         watch.after_poll(0, 0, Some("permission denied"));
         assert!(!watch.after_poll(5, 0, None).may_alert);
         assert!(watch.after_poll(6, 0, None).may_alert);
@@ -261,7 +322,7 @@ mod tests {
 
     #[test]
     fn history_beyond_the_saved_mark_is_unread() {
-        let mut watch = Watch::new(3);
+        let mut watch = Watch::new(ReadMark::through(3));
         watch.after_poll(9, 5, None);
         assert_eq!(
             watch.unread(),
@@ -272,7 +333,7 @@ mod tests {
 
     #[test]
     fn a_failed_launch_read_keeps_the_saved_mark() {
-        let mut watch = Watch::new(3);
+        let mut watch = Watch::new(ReadMark::through(3));
         watch.after_poll(0, 0, Some("permission denied"));
         watch.after_poll(9, 5, None);
         assert_eq!(watch.unread(), 2);
@@ -280,7 +341,7 @@ mod tests {
 
     #[test]
     fn a_saved_mark_above_the_logs_count_leaves_every_call_unread() {
-        let mut watch = Watch::new(7);
+        let mut watch = Watch::new(ReadMark::through(7));
         watch.after_poll(4, 2, None);
         assert_eq!(watch.unread(), 2, "the mark was saved for a replaced log");
         watch.after_poll(5, 3, None);
@@ -288,28 +349,64 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_mark_of_a_call_the_log_lacks_leaves_every_call_unread() {
+        let mut watch = Watch::new(ReadMark::of([1, 4]));
+        watch.after_poll(4, 3, None);
+        assert_eq!(watch.unread(), 3, "the log has no fourth blocked call");
+        watch.after_poll(5, 4, None);
+        assert!(!watch.read().contains(4), "the new fourth call is unread");
+    }
+
+    #[test]
     fn a_mark_reads_only_the_calls_the_screen_showed() {
-        let mut watch = Watch::new(0);
+        let mut watch = Watch::new(ReadMark::default());
         watch.after_poll(0, 0, None);
         watch.after_poll(3, 3, None);
-        let marked = watch.mark_read(2);
+        let marked = watch.mark_read(&ReadMark::through(2));
         assert_eq!(
             marked,
             MarkActions {
                 publish: true,
-                save: Some(2)
+                save: Some(ReadMark::through(2))
             }
         );
         assert_eq!(watch.unread(), 1, "the call that arrived after that screen");
         assert_eq!(
-            watch.mark_read(2).save,
+            watch.mark_read(&ReadMark::through(2)).save,
             None,
             "a repeated mark moves nothing"
         );
         assert_eq!(
-            watch.mark_read(4).save,
+            watch.mark_read(&ReadMark::through(4)).save,
             None,
             "a count the log never held moves nothing"
         );
+    }
+
+    #[test]
+    fn selected_calls_are_read_and_the_rest_stay_unread() {
+        let mut watch = Watch::new(ReadMark::default());
+        watch.after_poll(4, 4, None);
+        let marked = watch.mark_read(&ReadMark::of([2, 4]));
+        assert_eq!(marked.save, Some(ReadMark::of([2, 4])));
+        assert_eq!(watch.unread(), 2);
+        assert!(!watch.read().contains(1) && !watch.read().contains(3));
+        assert_eq!(
+            watch.mark_read(&ReadMark::of([2])).save,
+            None,
+            "a call that is already read moves nothing"
+        );
+        assert_eq!(
+            watch.mark_read(&ReadMark::of([3, 5])).save,
+            None,
+            "a selection with a call the log never held moves nothing"
+        );
+        let all = watch.mark_read(&ReadMark::through(3));
+        assert_eq!(
+            all.save,
+            Some(ReadMark::through(4)),
+            "marking all keeps the call selected earlier"
+        );
+        assert_eq!(watch.unread(), 0);
     }
 }

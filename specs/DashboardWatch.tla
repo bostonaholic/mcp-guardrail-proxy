@@ -5,11 +5,13 @@
 (* raise a notification. The first successful read loads history, so it    *)
 (* must stay silent. revision counts changes to the dashboard state.        *)
 (*                                                                         *)
-(* It also keeps the read mark: how many of the log's blocked calls the    *)
-(* person has marked read. The unread count is the rest. The mark saved    *)
-(* by an earlier run loads at launch, and the history read settles it.     *)
+(* It also keeps the read mark: which of the log's blocked calls the       *)
+(* person has marked read. A call is named by its place among the log's    *)
+(* blocked calls, counted from 1. The unread count is the rest. The mark   *)
+(* saved by an earlier run loads at launch, and the history read settles   *)
+(* it.                                                                     *)
 (***************************************************************************)
-EXTENDS Naturals
+EXTENDS Naturals, FiniteSets
 
 CONSTANTS MaxRevision,           \* DashboardWatch.cfg: MaxRevision = 3
           MaxBlocked             \* DashboardWatch.cfg: MaxBlocked = 2
@@ -21,8 +23,8 @@ VARIABLES phase,                 \* "Starting" | "LoadingHistory" | "Live"
           error,                 \* the last poll's error
           revision,              \* the dashboard's revision
           blocked,               \* the blocked calls the dashboard has counted
-          savedCount,            \* the read mark an earlier run saved
-          readBlocked,           \* the blocked calls marked read
+          savedRead,             \* the read mark an earlier run saved
+          readCalls,             \* the blocked calls marked read
           published,             \* the last step published
           mayAlert,              \* the last poll may notify
           saveRequested,         \* the last step asked to save the read mark
@@ -30,10 +32,13 @@ VARIABLES phase,                 \* "Starting" | "LoadingHistory" | "Live"
           markedRead             \* ghost: the calls of this log the person marked read
 
 vars == <<phase, shownError, shownRevision, shownUnread, error, revision, blocked,
-          savedCount, readBlocked, published, mayAlert, saveRequested,
+          savedRead, readCalls, published, mayAlert, saveRequested,
           alertedOnHistory, markedRead>>
 
 Errors == {"None", "E1", "E2"}
+
+\* Every set of blocked calls a mark can name.
+Marks == SUBSET (1..MaxBlocked)
 
 TypeOK ==
   /\ phase \in {"Starting", "LoadingHistory", "Live"}
@@ -43,13 +48,13 @@ TypeOK ==
   /\ error \in Errors
   /\ revision \in 0..MaxRevision
   /\ blocked \in 0..MaxBlocked
-  /\ savedCount \in 0..MaxBlocked
-  /\ readBlocked \in 0..MaxBlocked
+  /\ savedRead \in Marks
+  /\ readCalls \in Marks
   /\ published \in BOOLEAN
   /\ mayAlert \in BOOLEAN
   /\ saveRequested \in BOOLEAN
   /\ alertedOnHistory \in BOOLEAN
-  /\ markedRead \in 0..MaxBlocked
+  /\ markedRead \in Marks
 
 Init ==
   /\ phase = "Starting"
@@ -59,43 +64,45 @@ Init ==
   /\ error = "None"
   /\ revision = 0
   /\ blocked = 0
-  /\ savedCount = 0
-  /\ readBlocked = 0
+  /\ savedRead = {}
+  /\ readCalls = {}
   /\ published = FALSE
   /\ mayAlert = FALSE
   /\ saveRequested = FALSE
   /\ alertedOnHistory = FALSE
-  /\ markedRead = 0
+  /\ markedRead = {}
 
-\* The blocked calls not marked read. A mark above the count leaves none.
-Unread(count, read) == IF count >= read THEN count - read ELSE 0
+\* How many blocked calls are not marked read. A mark larger than the count
+\* leaves none.
+Unread(count, read) ==
+  IF count >= Cardinality(read) THEN count - Cardinality(read) ELSE 0
 
-\* Launch: the read mark an earlier run saved for this log loads. 0 means none.
+\* Launch: the read mark an earlier run saved for this log loads. {} means none.
 Open ==
   /\ phase = "Starting"
-  /\ savedCount' \in 0..MaxBlocked
+  /\ savedRead' \in Marks
   /\ phase' = "LoadingHistory"
   /\ published' = FALSE
   /\ mayAlert' = FALSE
   /\ saveRequested' = FALSE
   /\ UNCHANGED <<shownError, shownRevision, shownUnread, error, revision, blocked,
-                 readBlocked, alertedOnHistory, markedRead>>
+                 readCalls, alertedOnHistory, markedRead>>
 
 \* The mark after a read that worked and left count blocked calls. The history
-\* read settles it: a saved mark above the log's count belongs to another file,
-\* so nothing is read. Later reads keep the mark.
+\* read settles it: a saved mark that names a call the log does not hold
+\* belongs to another file, so nothing is read. Later reads keep the mark.
 MarkAfter(count) ==
   IF phase = "LoadingHistory"
-  THEN IF savedCount <= count THEN savedCount ELSE 0
-  ELSE readBlocked
+  THEN IF savedRead \subseteq 1..count THEN savedRead ELSE {}
+  ELSE readCalls
 
 \* One poll ended with error e and left the dashboard at nextRevision, with
-\* nextBlocked blocked calls and nextRead of them read.
+\* nextBlocked blocked calls and the calls nextRead read.
 Settle(e, nextRevision, nextBlocked, nextRead) ==
   /\ error' = e
   /\ revision' = nextRevision
   /\ blocked' = nextBlocked
-  /\ readBlocked' = nextRead
+  /\ readCalls' = nextRead
   /\ published' = \/ e /= shownError
                   \/ nextRevision /= shownRevision
                   \/ Unread(nextBlocked, nextRead) /= shownUnread
@@ -103,7 +110,7 @@ Settle(e, nextRevision, nextBlocked, nextRead) ==
   /\ shownRevision' = nextRevision
   /\ shownUnread' = Unread(nextBlocked, nextRead)
   /\ saveRequested' = FALSE
-  /\ UNCHANGED savedCount
+  /\ UNCHANGED savedRead
 
 \* The read worked. A notification needs a read after the history read.
 MayAlertIfLive ==
@@ -118,7 +125,7 @@ ReadWorked(count) ==
 
 PollFails(e) ==
   /\ phase /= "Starting"
-  /\ Settle(e, revision, blocked, readBlocked)
+  /\ Settle(e, revision, blocked, readCalls)
   /\ mayAlert' = FALSE
   /\ UNCHANGED <<phase, alertedOnHistory, markedRead>>
 
@@ -137,28 +144,30 @@ PollNewLines(count) ==
   /\ Settle("None", revision + 1, count, MarkAfter(count))
   /\ ReadWorked(count)
 
-\* The person marks read the first seen blocked calls, the count their screen
-\* showed. It moves the mark forward, and only within the log's count.
+\* The person marks read the blocked calls seen, which their screen showed:
+\* the rows they selected, or 1..n when the screen showed n blocked calls and
+\* they marked all. The mark only grows, and only within the log's calls.
 MarkRead(seen) ==
-  /\ readBlocked < seen
-  /\ seen <= blocked
-  /\ readBlocked' = seen
-  /\ markedRead' = seen
-  /\ shownUnread' = blocked - seen
+  /\ seen \subseteq 1..blocked
+  /\ ~(seen \subseteq readCalls)
+  /\ readCalls' = readCalls \union seen
+  /\ markedRead' = readCalls \union seen
+  /\ shownUnread' = Unread(blocked, readCalls \union seen)
   /\ published' = TRUE
   /\ saveRequested' = TRUE
   /\ mayAlert' = FALSE
   /\ UNCHANGED <<phase, shownError, shownRevision, error, revision, blocked,
-                 savedCount, alertedOnHistory>>
+                 savedRead, alertedOnHistory>>
 
-\* A mark that would move nothing: none unread, or a count the log never held.
+\* A mark that would move nothing: every call it names is read, or it names a
+\* call the log never held.
 MarkReadIgnored ==
   /\ phase /= "Starting"
   /\ published' = FALSE
   /\ saveRequested' = FALSE
   /\ mayAlert' = FALSE
   /\ UNCHANGED <<phase, shownError, shownRevision, shownUnread, error, revision,
-                 blocked, savedCount, readBlocked, alertedOnHistory, markedRead>>
+                 blocked, savedRead, readCalls, alertedOnHistory, markedRead>>
 
 Next ==
   \/ Open
@@ -166,7 +175,7 @@ Next ==
   \/ PollFails("E2")
   \/ PollQuiet
   \/ \E count \in 0..MaxBlocked : PollNewLines(count)
-  \/ \E seen \in 1..MaxBlocked : MarkRead(seen)
+  \/ \E seen \in Marks : MarkRead(seen)
   \/ MarkReadIgnored
 
 Spec == Init /\ [][Next]_vars
@@ -178,18 +187,18 @@ Spec == Init /\ [][Next]_vars
 ScreenIsCurrent ==
   /\ shownError = error
   /\ shownRevision = revision
-  /\ shownUnread = Unread(blocked, readBlocked)
+  /\ shownUnread = Unread(blocked, readCalls)
 
 \* Lines that were in the log at launch never raise a notification.
 HistoryStaysSilent == ~alertedOnHistory
 
-\* The mark never passes the log's blocked calls, so each new one is unread.
-MarkFitsTheLog == readBlocked <= blocked
+\* The mark names only calls the log holds, so each new blocked call is unread.
+MarkFitsTheLog == readCalls \subseteq 1..blocked
 
-\* Once the history read has settled the mark, no poll moves it back.
-MarkIsNotLost == phase = "Live" => readBlocked >= markedRead
+\* Once the history read has settled the mark, no poll unmarks a call.
+MarkIsNotLost == phase = "Live" => markedRead \subseteq readCalls
 
-\* Only a mark that moved asks for a save.
-SaveFollowsAMark == saveRequested => (published /\ readBlocked > 0)
+\* Only a mark that grew asks for a save.
+SaveFollowsAMark == saveRequested => (published /\ readCalls /= {})
 
 =============================================================================

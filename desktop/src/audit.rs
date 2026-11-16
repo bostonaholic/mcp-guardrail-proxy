@@ -65,6 +65,9 @@ pub struct SessionSummary {
 pub struct RecentCall {
     #[serde(flatten)]
     pub event: AuditEvent,
+    /// The call's place among the log's blocked calls, counted from 1. A mark-read request
+    /// names a call by it. `None` for a forwarded call.
+    pub blocked_number: Option<u64>,
     /// Blocked and not marked read.
     pub unread: bool,
 }
@@ -87,7 +90,8 @@ pub struct Snapshot {
 
 #[derive(Debug, Default)]
 pub struct Dashboard {
-    recent: VecDeque<AuditEvent>,
+    /// Each event with its place among the blocked calls, when it is one.
+    recent: VecDeque<(AuditEvent, Option<u64>)>,
     sessions: BTreeMap<String, SessionSummary>,
     malformed_lines: u64,
     total_calls: u64,
@@ -129,7 +133,8 @@ impl Dashboard {
         session.calls += 1;
         session.blocked += blocked;
         session.last_seen_ms = event.timestamp_ms;
-        self.recent.push_back(event.clone());
+        let blocked_number = (!event.forwarded).then_some(self.total_blocked);
+        self.recent.push_back((event.clone(), blocked_number));
         if self.recent.len() > MAX_RECENT_EVENTS {
             self.recent.pop_front();
         }
@@ -140,31 +145,28 @@ impl Dashboard {
         self.total_calls + self.malformed_lines
     }
 
-    /// Every blocked call so far. The read mark counts from the first of them.
+    /// Every blocked call so far. The read mark names a call by its place among them.
     pub fn total_blocked(&self) -> u64 {
         self.total_blocked
     }
 
-    /// `unread_blocked` is how many blocked calls are not marked read. The read mark counts
-    /// from the log's first blocked call, so the unread ones are the newest.
+    /// `unread_blocked` is how many blocked calls are not marked read, and `is_read` says
+    /// whether the blocked call at a place is.
     pub fn snapshot(
         &self,
         log_path: &str,
         source_error: Option<String>,
         unread_blocked: u64,
+        is_read: impl Fn(u64) -> bool,
     ) -> Snapshot {
-        let mut unread_left = unread_blocked;
         let events = self
             .recent
             .iter()
             .rev()
-            .map(|event| {
-                let unread = !event.forwarded && unread_left > 0;
-                unread_left -= u64::from(unread);
-                RecentCall {
-                    event: event.clone(),
-                    unread,
-                }
+            .map(|(event, blocked_number)| RecentCall {
+                event: event.clone(),
+                blocked_number: *blocked_number,
+                unread: blocked_number.is_some_and(|call| !is_read(call)),
             })
             .collect();
         let mut sessions: Vec<SessionSummary> = self.sessions.values().cloned().collect();
@@ -297,7 +299,7 @@ mod tests {
             line("a", 2, "deny", false, "Tainted"),
             line("b", 3, "allow", true, "Clean"),
         ]);
-        let snapshot = dashboard.snapshot("log", None, 0);
+        let snapshot = dashboard.snapshot("log", None, 0, |_| false);
         assert_eq!(snapshot.total_calls, 3);
         assert_eq!(snapshot.total_blocked, 1);
         assert_eq!(snapshot.sessions[0].session_id, "b");
@@ -312,7 +314,7 @@ mod tests {
 
     #[test]
     fn the_tray_shows_the_unread_count_only_when_calls_are_unread() {
-        let mut snapshot = Dashboard::default().snapshot("log", None, 0);
+        let mut snapshot = Dashboard::default().snapshot("log", None, 0, |_| false);
         assert_eq!(tray_title(&snapshot), "", "no text when all are read");
         snapshot.total_blocked = 5;
         snapshot.unread_blocked = 3;
@@ -324,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn the_newest_blocked_calls_are_the_unread_ones() {
+    fn each_blocked_row_has_its_number_and_its_read_state() {
         let mut dashboard = Dashboard::default();
         dashboard.apply_lines(&[
             line("a", 1, "deny", false, "Clean"),
@@ -332,23 +334,40 @@ mod tests {
             line("a", 3, "allow", true, "Clean"),
             line("a", 4, "require-approval", false, "Clean"),
         ]);
-        let unread_rows = |unread_blocked| -> Vec<(u64, bool)> {
+        let rows = |is_read: fn(u64) -> bool| -> Vec<(u64, Option<u64>, bool)> {
             dashboard
-                .snapshot("log", None, unread_blocked)
+                .snapshot("log", None, 0, is_read)
                 .events
                 .iter()
-                .map(|call| (call.event.sequence, call.unread))
+                .map(|call| (call.event.sequence, call.blocked_number, call.unread))
                 .collect()
         };
         assert_eq!(
-            unread_rows(2),
-            [(4, true), (3, false), (2, true), (1, false)],
-            "the read mark counts from the first blocked call, and an allowed call is never unread"
+            rows(|call| call == 2),
+            [
+                (4, Some(3), true),
+                (3, None, false),
+                (2, Some(2), false),
+                (1, Some(1), true)
+            ],
+            "only the second blocked call is read, and an allowed call is never unread"
         );
         assert_eq!(
-            unread_rows(0),
-            [(4, false), (3, false), (2, false), (1, false)]
+            rows(|_| true).iter().filter(|row| row.2).count(),
+            0,
+            "no row is unread when every blocked call is read"
         );
+    }
+
+    #[test]
+    fn a_blocked_call_keeps_its_number_after_older_rows_leave_the_list() {
+        let mut lines = vec![line("a", 0, "deny", false, "Clean")];
+        lines.extend((1..=MAX_RECENT_EVENTS as u64).map(|n| line("a", n, "allow", true, "Clean")));
+        lines.push(line("a", 999, "deny", false, "Clean"));
+        let mut dashboard = Dashboard::default();
+        dashboard.apply_lines(&lines);
+        let snapshot = dashboard.snapshot("log", None, 2, |_| false);
+        assert_eq!(snapshot.events[0].blocked_number, Some(2));
     }
 
     #[test]
@@ -358,14 +377,15 @@ mod tests {
             .collect();
         let mut dashboard = Dashboard::default();
         dashboard.apply_lines(&lines);
-        let snapshot = dashboard.snapshot("log", None, 0);
+        let snapshot = dashboard.snapshot("log", None, 0, |_| false);
         assert_eq!(snapshot.events.len(), MAX_RECENT_EVENTS);
         assert_eq!(snapshot.total_calls, MAX_RECENT_EVENTS as u64 + 5);
     }
 
     #[test]
     fn a_source_error_replaces_the_tray_status() {
-        let snapshot = Dashboard::default().snapshot("log", Some("denied".to_string()), 0);
+        let snapshot =
+            Dashboard::default().snapshot("log", Some("denied".to_string()), 0, |_| false);
         assert_eq!(tray_status(&snapshot), "Cannot read audit log: denied");
     }
 

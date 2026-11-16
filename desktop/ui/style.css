@@ -32,14 +32,16 @@ tr:last-child td { border-bottom: 0; }
 .calls .time { width: 104px; }
 .calls .tool { width: 18%; }
 .calls .decision { width: 124px; }
-.calls .read { width: 72px; }
+.calls .read { width: 96px; }
 .calls .rule { width: 22%; }
 .calls tr:has(td.unread) { background: var(--selected); }
 td.unread { color: var(--accent); font-weight: 600; }
+td.unread label { display: flex; align-items: center; gap: 6px; }
+td.unread input { margin: 0; }
 td.read { color: var(--muted); }
 .setting { display: block; margin-top: 12px; }
 .filter { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
-#mark-read { margin-bottom: 8px; }
+.marks { display: flex; gap: 6px; margin-bottom: 8px; }
 .deny, .Tainted { color: var(--deny); font-weight: 600; }
 .require-approval { color: var(--approve); font-weight: 600; }
 .allow { color: var(--allow); }

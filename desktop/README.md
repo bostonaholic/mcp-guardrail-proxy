@@ -60,18 +60,19 @@ If the app cannot read `settings.json` at launch, it uses the defaults and shows
 
 The tray icon shows a number beside it: the blocked calls you have not marked read. A blocked call is one the proxy did not forward, so it is a denied call or one that waits for approval. The number goes away when every blocked call is read. The first line of the tray menu and the dashboard's stats show the same count.
 
-The dashboard's Recent calls table has a Read column. Each blocked call shows Unread or Read, and the unread rows are shaded. A forwarded call is never unread, so its cell is empty.
+The dashboard's Recent calls table has a Read column. Each blocked call shows Unread or Read, and the unread rows are shaded. An unread row has a checkbox that selects it. A forwarded call is never unread, so its cell is empty.
 
-To mark the blocked calls read, do one of these:
+To mark blocked calls read, do one of these:
 
-- Click "Mark Blocked Calls as Read" in the tray.
-- Click Mark as read on the dashboard.
+- Select rows on the dashboard, then click Mark selected as read. Only those calls become read.
+- Click Mark all as read on the dashboard.
+- Click "Mark All as Read" in the tray.
 
-Both are disabled when no blocked call is unread. A mark covers the blocked calls your screen showed when you clicked. A call that arrives in that moment stays unread.
+Mark selected as read is disabled when no row is selected. The other two are disabled when no blocked call is unread. A mark of all covers the blocked calls your screen showed when you clicked. A call that arrives in that moment stays unread. A selected row that leaves the Recent calls table is no longer selected.
 
 The count survives a relaunch. Calls blocked while the app was closed count as unread at the next launch, and they raise no notification, like the rest of the history. The first launch of a version with this count shows every blocked call in the log as unread, because you have marked none.
 
-The app saves the read mark to `read-mark.json`, next to `settings.json`. The file names the log and holds how many of its blocked calls are read, counted from the first one. The app keeps one mark, for one log. After you change the audit log path, every blocked call in the new log is unread, and the next mark replaces the old log's mark. If the save fails, the mark holds until the app quits, and the app writes the reason to stderr. To make every blocked call unread again, quit the app and delete `read-mark.json`.
+The app saves the read mark to `read-mark.json`, next to `settings.json`. The file names the log and the blocked calls that are read. It names a call by its place among the log's blocked calls, counted from 1: `read_blocked` says how many are read from the first one on, and `read_after` lists the read calls after the first unread one. The app keeps one mark, for one log. After you change the audit log path, every blocked call in the new log is unread, and the next mark replaces the old log's mark. If the save fails, the mark holds until the app quits, and the app writes the reason to stderr. To make every blocked call unread again, quit the app and delete `read-mark.json`.
 
 ## Servers
 
@@ -220,8 +221,8 @@ On the Updates tab, Install downloads and installs the version the last check fo
 - An audit sink failure is invisible here. The failed line goes to stderr as `audit-fallback:`, not to the log.
 - Lines already in the log at launch load as history and raise no notification. If the first read fails, the first read that works counts as that launch read.
 - A replacement log that grows past the old read position between two polls goes unnoticed, because the app polls by size. Its earlier lines are lost to the dashboard. The proxy only appends, so only an outside rotation can cause this.
-- The read mark is a count, because audit lines have no id. If the log is replaced while the app is closed, and the new log already holds at least as many blocked calls as the mark at the next launch, the app counts that many of its blocked calls as read. A new log with fewer blocked calls than the mark starts with all of them unread. Only an outside rotation can cause this.
-- A mark covers every blocked call the log held, including calls older than the 500 that the Recent calls table lists.
+- The read mark names a blocked call by its place among the log's blocked calls, because audit lines have no id. If the log is replaced while the app is closed, and the new log already holds a blocked call at every place the mark names at the next launch, the app counts the calls at those places as read. A new log with fewer blocked calls than the highest place in the mark starts with all of them unread. Only an outside rotation can cause this.
+- A mark of all covers every blocked call the log held, including calls older than the 500 that the Recent calls table lists. You can select only the calls that the table lists.
 - Two app processes that mark calls read can lose one mark, because the later save replaces the file.
 
 The app leaves out `arguments`, because redaction matches known patterns and a secret could survive it.
@@ -246,4 +247,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify, and keeps the read mark that gives the unread count. `src/read_mark.rs` reads and writes the read mark file. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/update.rs` is the pure update machine, which decides each update check, install, and notice. `src/tail.rs`, `src/watch.rs`, and `src/update.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/clients.rs` holds the client table and the scan rules of `INSTALL.md` step 5.2, and does no I/O. `src/servers.rs` reads the client config files for the Servers tab and writes the rows that Wrap wraps. `src/settings.rs` holds the app's own settings. `src/update_settings.rs` reads and writes the update settings file. `src/updater.rs` is the only module that reaches the network. `src/notify.rs` sends the notifications. `src/main.rs` holds the tray, the two windows, the commands, the poll thread, and the update thread. `ui/index.html` and `ui/app.js` are the dashboard. `ui/settings.html` and `ui/settings.js` are the Settings window. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.
+`src/audit.rs` turns log lines into dashboard state and does no I/O. `src/tail.rs` follows the file. `src/watch.rs` decides what each poll publishes and whether it may notify, and keeps the read mark that says which blocked calls are unread. `src/read_mark.rs` holds the read mark and reads and writes its file. `src/monitor.rs` joins the tail, the dashboard, and the poll decision for one watched log. `src/update.rs` is the pure update machine, which decides each update check, install, and notice. `src/tail.rs`, `src/watch.rs`, and `src/update.rs` hold state machines that `cargo test` walks against `../specs/graphs`. `src/clients.rs` holds the client table and the scan rules of `INSTALL.md` step 5.2, and does no I/O. `src/servers.rs` reads the client config files for the Servers tab and writes the rows that Wrap wraps. `src/settings.rs` holds the app's own settings. `src/update_settings.rs` reads and writes the update settings file. `src/updater.rs` is the only module that reaches the network. `src/notify.rs` sends the notifications. `src/main.rs` holds the tray, the two windows, the commands, the poll thread, and the update thread. `ui/index.html` and `ui/app.js` are the dashboard. `ui/settings.html` and `ui/settings.js` are the Settings window. Every audit value reaches the page through `textContent`, because tool names and URIs can hold attacker-influenced text.

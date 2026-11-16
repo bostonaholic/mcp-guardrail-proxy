@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::audit::{Alert, AuditEvent, Dashboard, Snapshot, alert_for};
-use crate::read_mark;
+use crate::read_mark::{self, ReadMark};
 use crate::settings::EffectiveSettings;
 use crate::tail::Tail;
 use crate::watch::Watch;
@@ -35,8 +35,8 @@ pub struct Monitor {
 impl Monitor {
     /// Opens the log and loads the lines already in it as history. The caller must always
     /// publish the snapshot, so the screen names this log even when the read fails.
-    /// `mark_file` holds the read mark. Blocked calls in the history beyond the mark saved for
-    /// this log are unread.
+    /// `mark_file` holds the read mark. Blocked calls in the history that the mark saved for
+    /// this log does not name are unread.
     pub fn open(settings: &EffectiveSettings, mark_file: &Path) -> (Self, Snapshot) {
         let path = settings.audit_log_path.clone();
         let log_path = path.display().to_string();
@@ -65,8 +65,11 @@ impl Monitor {
     }
 
     fn snapshot(&self, source_error: Option<String>) -> Snapshot {
+        let read = self.watch.read();
         self.dashboard
-            .snapshot(&self.log_path, source_error, self.watch.unread())
+            .snapshot(&self.log_path, source_error, self.watch.unread(), |call| {
+                read.contains(call)
+            })
     }
 
     /// `Some` only when `settings` names another log: that log's first snapshot, which the
@@ -82,16 +85,16 @@ impl Monitor {
         Some(first)
     }
 
-    /// Marks read the first `seen_blocked` blocked calls of `log_path`, the log and count the
-    /// person's screen showed, and saves the mark. `None` when nothing changed: the screen
-    /// showed another log, or no call it showed was unread.
-    pub fn mark_read(&mut self, log_path: &str, seen_blocked: u64) -> Option<Marked> {
+    /// Marks read the blocked calls `seen` names in `log_path`, the log and calls the person's
+    /// screen showed, and saves the mark. `None` when nothing changed: the screen showed
+    /// another log, or no call it named was unread.
+    pub fn mark_read(&mut self, log_path: &str, seen: &ReadMark) -> Option<Marked> {
         if log_path != self.log_path {
             return None;
         }
-        let actions = self.watch.mark_read(seen_blocked);
-        let save_error = actions.save.and_then(|read_blocked| {
-            read_mark::save(&self.mark_file, &self.log_path, read_blocked)
+        let actions = self.watch.mark_read(seen);
+        let save_error = actions.save.and_then(|mark| {
+            read_mark::save(&self.mark_file, &self.log_path, &mark)
                 .err()
                 .map(|error| error.to_string())
         });
@@ -344,7 +347,7 @@ mod tests {
         let polled = monitor.poll().snapshot.expect("new lines publish");
         assert_eq!(polled.unread_blocked, 2, "an allowed call is never unread");
         let marked = monitor
-            .mark_read(&polled.log_path, polled.total_blocked)
+            .mark_read(&polled.log_path, &ReadMark::through(polled.total_blocked))
             .expect("the mark publishes");
         assert_eq!(marked.snapshot.unread_blocked, 0);
         assert_eq!(unread_tools(&polled), ["live-blocked", "history-blocked"]);
@@ -370,11 +373,13 @@ mod tests {
         append(&log, &line("arrived-after-that-screen", false));
         monitor.poll();
         assert!(
-            monitor.mark_read("/another/log.jsonl", 2).is_none(),
+            monitor
+                .mark_read("/another/log.jsonl", &ReadMark::through(2))
+                .is_none(),
             "a screen that showed another log marks nothing"
         );
         let marked = monitor
-            .mark_read(&shown.log_path, shown.total_blocked)
+            .mark_read(&shown.log_path, &ReadMark::through(shown.total_blocked))
             .expect("the mark publishes");
         assert_eq!(
             marked.snapshot.unread_blocked, 1,
@@ -382,7 +387,7 @@ mod tests {
         );
         assert!(
             monitor
-                .mark_read(&shown.log_path, shown.total_blocked)
+                .mark_read(&shown.log_path, &ReadMark::through(shown.total_blocked))
                 .is_none(),
             "the same mark again changes nothing"
         );
@@ -396,7 +401,7 @@ mod tests {
         append(&log, &line("read-before-quit", false));
         let (mut monitor, first) = Monitor::open(&settings_for(&log), &mark_file);
         monitor
-            .mark_read(&first.log_path, first.total_blocked)
+            .mark_read(&first.log_path, &ReadMark::through(first.total_blocked))
             .expect("the mark publishes");
         drop(monitor);
         let (_, relaunched) = Monitor::open(&settings_for(&log), &mark_file);
@@ -412,6 +417,29 @@ mod tests {
     }
 
     #[test]
+    fn a_selected_call_is_read_and_stays_read_after_a_relaunch() {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let log = dir.path().join("audit.jsonl");
+        let mark_file = dir.path().join("config").join("read-mark.json");
+        append(&log, &line("first", false));
+        append(&log, &line("second", false));
+        append(&log, &line("third", false));
+        let (mut monitor, first) = Monitor::open(&settings_for(&log), &mark_file);
+        assert_eq!(unread_tools(&first), ["third", "second", "first"]);
+        let second = first.events[1]
+            .blocked_number
+            .expect("a blocked call has a number");
+        let marked = monitor
+            .mark_read(&first.log_path, &ReadMark::of([second]))
+            .expect("the mark publishes");
+        assert_eq!(unread_tools(&marked.snapshot), ["third", "first"]);
+        assert_eq!(marked.snapshot.unread_blocked, 2);
+        drop(monitor);
+        let (_, relaunched) = Monitor::open(&settings_for(&log), &mark_file);
+        assert_eq!(unread_tools(&relaunched), ["third", "first"]);
+    }
+
+    #[test]
     fn a_mark_saved_for_a_longer_log_leaves_a_replaced_log_unread() {
         let dir = tempfile::tempdir().expect("create a temp dir");
         let log = dir.path().join("audit.jsonl");
@@ -420,7 +448,7 @@ mod tests {
         append(&log, &line("old-second", false));
         let (mut monitor, first) = Monitor::open(&settings_for(&log), &mark_file);
         monitor
-            .mark_read(&first.log_path, first.total_blocked)
+            .mark_read(&first.log_path, &ReadMark::through(first.total_blocked))
             .expect("the mark publishes");
         drop(monitor);
         std::fs::write(&log, line("new-first", false)).expect("replace the log");
@@ -442,7 +470,7 @@ mod tests {
         let failed = monitor.poll().snapshot.expect("the error publishes");
         assert!(failed.source_error.is_some());
         let marked = monitor
-            .mark_read(&first.log_path, first.total_blocked)
+            .mark_read(&first.log_path, &ReadMark::through(first.total_blocked))
             .expect("the mark publishes");
         assert_eq!(marked.snapshot.unread_blocked, 0);
         assert_eq!(
@@ -461,7 +489,7 @@ mod tests {
         let mark_file = plain.join("read-mark.json");
         let (mut monitor, first) = Monitor::open(&settings_for(&log), &mark_file);
         let marked = monitor
-            .mark_read(&first.log_path, first.total_blocked)
+            .mark_read(&first.log_path, &ReadMark::through(first.total_blocked))
             .expect("the mark publishes");
         assert_eq!(
             marked.snapshot.unread_blocked, 0,
@@ -480,7 +508,7 @@ mod tests {
         append(&new, &line("new-blocked-second", false));
         let (_state, mut monitor, first) = open(&settings_for(&old));
         monitor
-            .mark_read(&first.log_path, first.total_blocked)
+            .mark_read(&first.log_path, &ReadMark::through(first.total_blocked))
             .expect("the mark publishes");
         let switched = monitor
             .apply(&settings_for(&new))

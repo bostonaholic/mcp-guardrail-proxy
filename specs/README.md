@@ -13,7 +13,7 @@ Every piece of code that remembers something between events and changes what it 
 | Stderr splitter | `LineSplitter`, `src/machines/splitter.rs` | `LineSplitter` | No byte is lost or invented, and lines stay within the cap. |
 | Line boundary | `LineBoundary`, `src/telemetry.rs` | `LineWriter` | A torn write never joins the next line, so an audit line stays whole on a shared stream. |
 | Log cursor | `TailCursor`, `desktop/src/tail.rs` | `AuditLogTail` | After a poll the cursor counts bytes of the current file, so no line is skipped. Read the assumption at the top of the spec. |
-| Poll gate | `Watch`, `desktop/src/watch.rs` | `DashboardWatch` | After a poll or a mark the screen is current, and history never raises a notification. The read mark never passes the log's blocked calls, so each new blocked call is unread. No poll moves the mark back, and only a mark that moved asks for a save. |
+| Poll gate | `Watch`, `desktop/src/watch.rs` | `DashboardWatch` | After a poll or a mark the screen is current, and history never raises a notification. The read mark names only blocked calls the log holds, so each new blocked call is unread. No poll unmarks a call, and only a mark that grew asks for a save. |
 | Update check | `UpdateMachine`, `desktop/src/update.rs` | `UpdateCheck` | One request runs at a time, and Off makes no automatic request. Each version gets at most one notice and one automatic install. An install starts only when this copy can install and the person or Install mode asked for it. |
 
 `CallJudgment` refines the per-call phases of `McpGuardrailTaint` at the grain of the code. `McpGuardrailTaint` stays the abstract proof of the taint rule, so its state count and Rust mirror do not change.
@@ -36,7 +36,7 @@ Each spec has a `*Broken.tla` variant that must fail, which proves the check can
 | `AuditLogTailBroken` | A poll that found no file kept the old offset, so a new log lost its first lines. |
 | `DashboardWatchBroken` | A launch read's error banner stayed after the file recovered, and a malformed line reached the screen only with the next audit event. |
 | `DashboardWatchHistoryBroken` | After a failed launch read, the first read that worked sent a notification for history. |
-| `DashboardWatchUnreadBroken` | The history read trusts a saved read mark above the log's blocked calls. That mark was saved for a log that has since been replaced, and it hides the new log's next blocked calls. |
+| `DashboardWatchUnreadBroken` | The history read trusts a saved read mark that names a blocked call the log does not hold. That mark was saved for a log that has since been replaced, and it hides the new log's blocked calls that take those places. |
 
 ## What this does not cover
 
@@ -47,7 +47,7 @@ Each spec has a `*Broken.tla` variant that must fail, which proves the check can
 - A broken variant shows that one invariant per spec can fail, not all of them.
 - The `UpdateCheck` walk checks `UpdateMachine` only. `desktop/src/updater.rs` and the updater plugin's own decisions, such as the version compare and the signature check, are outside it.
 - `UpdateCheck` models two versions, `V1` below `V2`.
-- The `DashboardWatch` walk checks `Watch` only. `Monitor` loads and saves the read mark file and drops a mark for another log. Unit tests in `desktop/src/monitor.rs` and `desktop/src/read_mark.rs` cover both. A saved mark at or below the log's blocked calls is trusted, so a replaced log that already holds that many goes unnoticed. `desktop/README.md` lists this limit.
+- The `DashboardWatch` walk checks `Watch` only. `Monitor` loads and saves the read mark file and drops a mark for another log. Unit tests in `desktop/src/monitor.rs` and `desktop/src/read_mark.rs` cover both. A saved mark that names only places the log holds is trusted, so a replaced log that already holds a blocked call at each of them goes unnoticed. `desktop/README.md` lists this limit.
 - The spec has no clock and offers only a mode other than the current one. Unit tests in `desktop/src/update.rs` cover the check schedule and a repeated choice of the current mode.
 
 ## Looked at and left out

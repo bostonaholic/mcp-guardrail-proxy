@@ -14,10 +14,28 @@ function cell(text, className) {
   return td;
 }
 
-// Only a blocked call is read or unread. A forwarded call gets an empty cell.
+// The blocked numbers of the unread rows the person ticked.
+const selected = new Set();
+
+// Only a blocked call is read or unread. A forwarded call gets an empty cell, and an unread
+// call gets a checkbox that selects it for Mark selected as read.
 function readCell(event) {
   if (event.forwarded) return cell("");
-  return event.unread ? cell("Unread", "unread") : cell("Read", "read");
+  if (!event.unread) return cell("Read", "read");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.id = `select-${event.blocked_number}`;
+  box.checked = selected.has(event.blocked_number);
+  box.addEventListener("change", () => {
+    if (box.checked) selected.add(event.blocked_number);
+    else selected.delete(event.blocked_number);
+    byId("mark-selected").disabled = selected.size === 0;
+  });
+  const label = document.createElement("label");
+  label.append(box, "Unread");
+  const td = cell("", "unread");
+  td.append(label);
+  return td;
 }
 
 function fillRows(tbody, rows) {
@@ -48,7 +66,11 @@ function render() {
   byId("stat-calls").textContent = latest.total_calls;
   byId("stat-blocked").textContent = latest.total_blocked;
   byId("stat-unread").textContent = latest.unread_blocked;
-  byId("mark-read").disabled = latest.unread_blocked === 0;
+  // A selected row that is now read, or that left the list, is no longer selected.
+  const unread = new Set(events.filter((e) => e.unread).map((e) => e.blocked_number));
+  for (const call of selected) if (!unread.has(call)) selected.delete(call);
+  byId("mark-selected").disabled = selected.size === 0;
+  byId("mark-all").disabled = latest.unread_blocked === 0;
   fillRows(byId("sessions"), sessions.map((s) => [
     cell(s.session_id), cell(s.taint_level, s.taint_level), cell(s.calls), cell(s.blocked), cell(dateTime(s.last_seen_ms)),
   ]));
@@ -71,9 +93,14 @@ async function refreshSettingsProblem() {
 
 // The app marks read only the blocked calls this page shows: a call that arrives after this
 // snapshot stays unread.
-function markRead() {
+function markAllRead() {
   if (!latest) return;
   invoke("mark_blocked_read", { logPath: latest.log_path, seenBlocked: latest.total_blocked });
+}
+
+function markSelectedRead() {
+  if (!latest) return;
+  invoke("mark_calls_read", { logPath: latest.log_path, calls: [...selected] });
 }
 
 function openSettings() {
@@ -90,7 +117,8 @@ document.addEventListener("keydown", (event) => {
 
 byId("open-settings").addEventListener("click", openSettings);
 byId("blocked-only").addEventListener("change", render);
-byId("mark-read").addEventListener("click", markRead);
+byId("mark-selected").addEventListener("click", markSelectedRead);
+byId("mark-all").addEventListener("click", markAllRead);
 listen("dashboard-updated", refresh);
 listen("settings-changed", refreshSettingsProblem);
 refresh();

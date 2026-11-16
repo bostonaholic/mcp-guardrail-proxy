@@ -17,7 +17,7 @@ MalformedLineUnpublished ==
   /\ published' = FALSE
   /\ mayAlert' = FALSE
   /\ saveRequested' = FALSE
-  /\ UNCHANGED <<phase, shownRevision, shownUnread, blocked, savedCount, readBlocked,
+  /\ UNCHANGED <<phase, shownRevision, shownUnread, blocked, savedRead, readCalls,
                  alertedOnHistory, markedRead>>
 
 BannerOutlivesError ==
@@ -27,7 +27,7 @@ BannerOutlivesError ==
   /\ mayAlert' = FALSE
   /\ saveRequested' = FALSE
   /\ UNCHANGED <<phase, shownError, shownRevision, shownUnread, revision, blocked,
-                 savedCount, readBlocked, alertedOnHistory, markedRead>>
+                 savedRead, readCalls, alertedOnHistory, markedRead>>
 
 BrokenSpec == Init /\ [][Next \/ MalformedLineUnpublished \/ BannerOutlivesError]_vars
 

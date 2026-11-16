@@ -34,6 +34,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use audit::{Snapshot, tray_status, tray_title};
 use clients::{Platform, ServerId};
 use monitor::Monitor;
+use read_mark::ReadMark;
 use serde::{Deserialize, Serialize};
 use servers::{HostEnv, ServersView, WrapReport};
 use settings::{EffectiveSettings, SettingsStore, SettingsView, chosen_folder_log_path};
@@ -108,11 +109,11 @@ impl SettingsTab {
 /// What the tray and the windows ask of the poll thread, which owns the watched log.
 enum WatchMessage {
     Settings(EffectiveSettings),
-    /// Mark read the first `seen_blocked` blocked calls of `log_path`: the log and the count on
-    /// the sender's screen, so a call that screen had not shown stays unread.
+    /// Mark read the blocked calls `seen` names in `log_path`: the log and the calls on the
+    /// sender's screen, so a call that screen had not shown stays unread.
     MarkRead {
         log_path: String,
-        seen_blocked: u64,
+        seen: ReadMark,
     },
 }
 
@@ -127,12 +128,9 @@ struct SettingsState {
 struct LogInbox(Sender<WatchMessage>);
 
 impl LogInbox {
-    fn mark_read(&self, log_path: String, seen_blocked: u64) {
+    fn mark_read(&self, log_path: String, seen: ReadMark) {
         // The send fails only when the poll thread is gone, as the app quits.
-        let _ = self.0.send(WatchMessage::MarkRead {
-            log_path,
-            seen_blocked,
-        });
+        let _ = self.0.send(WatchMessage::MarkRead { log_path, seen });
     }
 }
 
@@ -162,10 +160,18 @@ fn snapshot(state: tauri::State<'_, SharedSnapshot>) -> Snapshot {
     state.lock().expect("the snapshot lock").clone()
 }
 
-/// The dashboard's Mark as read button. The page passes the log and the blocked count it shows.
+/// The dashboard's Mark all as read button. The page passes the log and the blocked count it
+/// shows.
 #[tauri::command]
 fn mark_blocked_read(log_path: String, seen_blocked: u64, inbox: tauri::State<'_, LogInbox>) {
-    inbox.mark_read(log_path, seen_blocked);
+    inbox.mark_read(log_path, ReadMark::through(seen_blocked));
+}
+
+/// The dashboard's Mark selected as read button. The page passes the log it shows and the
+/// blocked number of each selected row.
+#[tauri::command]
+fn mark_calls_read(log_path: String, calls: Vec<u64>, inbox: tauri::State<'_, LogInbox>) {
+    inbox.mark_read(log_path, ReadMark::of(calls));
 }
 
 #[tauri::command]
@@ -409,7 +415,7 @@ fn build_tray(app: &AppHandle, first: &Snapshot, updates: TrayItem) -> tauri::Re
     let mark_read_item = MenuItem::with_id(
         app,
         MARK_READ_ITEM_ID,
-        "Mark Blocked Calls as Read",
+        "Mark All as Read",
         first.unread_blocked > 0,
         None::<&str>,
     )?;
@@ -468,7 +474,8 @@ fn mark_read_from_tray(app: &AppHandle) {
         let shown = shown.lock().expect("the snapshot lock");
         (shown.log_path.clone(), shown.total_blocked)
     };
-    app.state::<LogInbox>().mark_read(log_path, seen_blocked);
+    app.state::<LogInbox>()
+        .mark_read(log_path, ReadMark::through(seen_blocked));
 }
 
 /// A tray check also opens the Updates tab, so its result reaches the person.
@@ -520,11 +527,8 @@ fn watch_log(
                     publish(&app, &shared, &items, snapshot);
                 }
             }
-            Ok(WatchMessage::MarkRead {
-                log_path,
-                seen_blocked,
-            }) => {
-                if let Some(marked) = monitor.mark_read(&log_path, seen_blocked) {
+            Ok(WatchMessage::MarkRead { log_path, seen }) => {
+                if let Some(marked) = monitor.mark_read(&log_path, &seen) {
                     if let Some(error) = marked.save_error {
                         eprintln!(
                             "mcp-guardrail-desktop: the read mark could not be saved: {error}"
@@ -658,6 +662,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             mark_blocked_read,
+            mark_calls_read,
             settings,
             set_audit_log_path,
             set_notifications,
