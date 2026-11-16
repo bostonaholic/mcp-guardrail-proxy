@@ -14,6 +14,12 @@ function cell(text, className) {
   return td;
 }
 
+// Only a blocked call is read or unread. A forwarded call gets an empty cell.
+function readCell(event) {
+  if (event.forwarded) return cell("");
+  return event.unread ? cell("Unread", "unread") : cell("Read", "read");
+}
+
 function fillRows(tbody, rows) {
   tbody.replaceChildren(
     ...rows.map((cells) => {
@@ -48,7 +54,7 @@ function render() {
   ]));
   const shown = byId("blocked-only").checked ? events.filter((e) => !e.forwarded) : events;
   fillRows(byId("events"), shown.map((e) => [
-    cell(time(e.timestamp_ms)), cell(e.tool_name), cell(e.decision, e.decision), cell(e.rule_id), cell(e.reason),
+    cell(time(e.timestamp_ms)), cell(e.tool_name), cell(e.decision, e.decision), readCell(e), cell(e.rule_id), cell(e.reason),
   ]));
   byId("empty").hidden = events.length > 0;
 }

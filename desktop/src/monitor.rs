@@ -65,10 +65,8 @@ impl Monitor {
     }
 
     fn snapshot(&self, source_error: Option<String>) -> Snapshot {
-        Snapshot {
-            unread_blocked: self.watch.unread(),
-            ..self.dashboard.snapshot(&self.log_path, source_error)
-        }
+        self.dashboard
+            .snapshot(&self.log_path, source_error, self.watch.unread())
     }
 
     /// `Some` only when `settings` names another log: that log's first snapshot, which the
@@ -184,7 +182,16 @@ mod tests {
         snapshot
             .events
             .iter()
-            .map(|event| event.tool_name.as_str())
+            .map(|call| call.event.tool_name.as_str())
+            .collect()
+    }
+
+    fn unread_tools(snapshot: &Snapshot) -> Vec<&str> {
+        snapshot
+            .events
+            .iter()
+            .filter(|call| call.unread)
+            .map(|call| call.event.tool_name.as_str())
             .collect()
     }
 
@@ -340,6 +347,8 @@ mod tests {
             .mark_read(&polled.log_path, polled.total_blocked)
             .expect("the mark publishes");
         assert_eq!(marked.snapshot.unread_blocked, 0);
+        assert_eq!(unread_tools(&polled), ["live-blocked", "history-blocked"]);
+        assert_eq!(unread_tools(&marked.snapshot), [""; 0]);
         assert_eq!(marked.snapshot.total_blocked, 2, "the total stays");
         assert_eq!(marked.save_error, None);
         append(&log, &line("blocked-after-the-mark", false));
