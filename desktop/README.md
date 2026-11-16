@@ -60,7 +60,7 @@ If the app cannot read `settings.json` at launch, it uses the defaults and shows
 
 The tray icon shows a number beside it: the blocked calls you have not marked read. A blocked call is one the proxy did not forward, so it is a denied call or one that waits for approval. The number goes away when every blocked call is read. The first line of the tray menu and the dashboard's stats show the same count.
 
-The dashboard's Recent calls table has a Read column. Each blocked call shows Unread or Read, and the unread rows are shaded. An unread row has a checkbox that selects it. A forwarded call is never unread, so its cell is empty.
+In the dashboard's Recent calls table, an unread blocked call has a blue dot and a checkbox at the start of its row, and the row is shaded. A read call has neither, and a forwarded call is never unread. Click an unread row or its checkbox to select it. A selected row is tinted.
 
 To mark blocked calls read, do one of these:
 

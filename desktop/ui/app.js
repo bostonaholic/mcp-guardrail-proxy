@@ -17,24 +17,27 @@ function cell(text, className) {
 // The blocked numbers of the unread rows the person ticked.
 const selected = new Set();
 
-// Only a blocked call is read or unread. A forwarded call gets an empty cell, and an unread
-// call gets a checkbox that selects it for Mark selected as read.
-function readCell(event) {
-  if (event.forwarded) return cell("");
-  if (!event.unread) return cell("Read", "read");
+// The first cell of a row. An unread call gets a dot, and a checkbox that selects it for Mark
+// selected as read. Every other call gets an empty cell: only a blocked call can be unread.
+function unreadCell(event) {
+  if (!event.unread) return cell("");
+  const td = cell("", "unread");
   const box = document.createElement("input");
   box.type = "checkbox";
   box.id = `select-${event.blocked_number}`;
+  box.setAttribute("aria-label", `Select the blocked call to ${event.tool_name} at ${time(event.timestamp_ms)}`);
   box.checked = selected.has(event.blocked_number);
   box.addEventListener("change", () => {
     if (box.checked) selected.add(event.blocked_number);
     else selected.delete(event.blocked_number);
     byId("mark-selected").disabled = selected.size === 0;
   });
-  const label = document.createElement("label");
-  label.append(box, "Unread");
-  const td = cell("", "unread");
-  td.append(label);
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  dot.role = "img";
+  dot.ariaLabel = "Unread";
+  dot.title = "Unread";
+  td.append(box, dot);
   return td;
 }
 
@@ -76,7 +79,7 @@ function render() {
   ]));
   const shown = byId("blocked-only").checked ? events.filter((e) => !e.forwarded) : events;
   fillRows(byId("events"), shown.map((e) => [
-    cell(time(e.timestamp_ms)), cell(e.tool_name), cell(e.decision, e.decision), readCell(e), cell(e.rule_id), cell(e.reason),
+    unreadCell(e), cell(time(e.timestamp_ms)), cell(e.tool_name), cell(e.decision, e.decision), cell(e.rule_id), cell(e.reason),
   ]));
   byId("empty").hidden = events.length > 0;
 }
@@ -117,6 +120,12 @@ document.addEventListener("keydown", (event) => {
 
 byId("open-settings").addEventListener("click", openSettings);
 byId("blocked-only").addEventListener("change", render);
+// A click anywhere on an unread row ticks its checkbox. The checkbox handles a click on
+// itself, and a click that ends a text selection is not a tick.
+byId("events").addEventListener("click", (event) => {
+  if (event.target.matches("input") || String(getSelection())) return;
+  event.target.closest("tr")?.querySelector("input")?.click();
+});
 byId("mark-selected").addEventListener("click", markSelectedRead);
 byId("mark-all").addEventListener("click", markAllRead);
 listen("dashboard-updated", refresh);
