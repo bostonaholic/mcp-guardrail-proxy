@@ -12,6 +12,7 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 ### Changed
 
 - The first line of the desktop app's tray menu now ends with the unread count.
+- The desktop app's tray menu is now in three groups, divided by separators: the watched log, the app, and Quit. "Open MCP Guardrail" moves up to the second line.
 
 ## 0.4.0 - 2026-11-12
 

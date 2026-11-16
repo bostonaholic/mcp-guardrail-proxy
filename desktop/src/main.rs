@@ -37,7 +37,7 @@ use monitor::Monitor;
 use serde::{Deserialize, Serialize};
 use servers::{HostEnv, ServersView, WrapReport};
 use settings::{EffectiveSettings, SettingsStore, SettingsView, chosen_folder_log_path};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
@@ -423,14 +423,17 @@ fn build_tray(app: &AppHandle, first: &Snapshot, updates: TrayItem) -> tauri::Re
     let settings_item = MenuItem::with_id(app, SETTINGS_ITEM_ID, "Settings…", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open MCP Guardrail", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    // Three groups: the watched log, the app, and quit.
     let menu = Menu::with_items(
         app,
         &[
             &status_item,
-            &mark_read_item,
-            &updates_item,
-            &settings_item,
             &open,
+            &mark_read_item,
+            &PredefinedMenuItem::separator(app)?,
+            &settings_item,
+            &updates_item,
+            &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
     )?;
