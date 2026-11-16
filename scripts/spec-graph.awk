@@ -11,6 +11,8 @@ function state_text(label,    parts, count, i, pair, text) {
     sub(/^\/\\\\ /, "", pair)
     sub(/ = /, "=", pair)
     gsub(/\\"/, "", pair)
+    # TLC prints a set as {1, 2}. A value must hold no space, so it becomes {1,2}.
+    gsub(/, /, ",", pair)
     text = text (i > 1 ? " " : "") pair
   }
   return text

@@ -4,6 +4,16 @@ This file records each release. The format follows [Keep a Changelog](https://ke
 
 ## Unreleased
 
+### Added
+
+- The desktop app's tray icon now shows how many blocked calls you have not marked read. Click "Mark All as Read" in the tray, or Mark all as read on the dashboard, to clear the count. The count survives a relaunch, and calls blocked while the app was closed count as unread. The first launch shows every blocked call in the log as unread.
+- The dashboard's Recent calls table marks each unread blocked call with a blue dot at the start of its row. To mark only some calls read, click their rows to select them, then click Mark selected as read.
+
+### Changed
+
+- The first line of the desktop app's tray menu now ends with the unread count.
+- The desktop app's tray menu is now in three groups, divided by separators: the watched log, the app, and Quit. "Open MCP Guardrail" moves up to the second line.
+
 ## 0.4.0 - 2026-11-12
 
 ### Changed

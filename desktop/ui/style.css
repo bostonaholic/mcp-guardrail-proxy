@@ -1,14 +1,14 @@
 :root {
   --bg: #fbfbfa; --fg: #1d1f21; --muted: #6b7075; --line: #e3e4e2; --surface: #ffffff;
   --deny: #b3261e; --approve: #8a5a00; --allow: #2e6b3e; --banner: #fdecea;
-  --accent: #0a64d6; --selected: rgba(0, 0, 0, 0.07);
+  --accent: #0a64d6; --selected: rgba(0, 0, 0, 0.07); --ticked: rgba(10, 100, 214, 0.16);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #17181a; --fg: #e6e7e8; --muted: #9a9fa5; --line: #2c2e31; --surface: #1f2123;
     --deny: #f2877e; --approve: #e5b95c; --allow: #7fc794; --banner: #3b1f1d;
-    --accent: #4c9bff; --selected: rgba(255, 255, 255, 0.1);
+    --accent: #4c9bff; --selected: rgba(255, 255, 255, 0.1); --ticked: rgba(76, 155, 255, 0.24);
   }
 }
 * { box-sizing: border-box; }
@@ -20,7 +20,7 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 header p { margin: 2px 0 0; font-size: 12px; overflow-wrap: anywhere; }
 .note { margin: 0 0 8px; font-size: 12px; }
 .banner { background: var(--banner); padding: 8px 12px; border-radius: 6px; margin: 12px 0 0; }
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 16px; }
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 16px; }
 .stats div { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .stats strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
 .stats span { color: var(--muted); font-size: 12px; }
@@ -32,9 +32,16 @@ tr:last-child td { border-bottom: 0; }
 .calls .time { width: 104px; }
 .calls .tool { width: 18%; }
 .calls .decision { width: 124px; }
-.calls .rule { width: 26%; }
+.calls .select { width: 52px; }
+.calls .rule { width: 24%; }
+.calls tr:has(td.unread) { background: var(--selected); cursor: pointer; }
+.calls tr:has(input:checked) { background: var(--ticked); }
+td.unread { white-space: nowrap; }
+td.unread input { margin: 0 6px 0 0; vertical-align: middle; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
 .setting { display: block; margin-top: 12px; }
 .filter { display: block; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+.marks { display: flex; gap: 6px; margin-bottom: 8px; }
 .deny, .Tainted { color: var(--deny); font-weight: 600; }
 .require-approval { color: var(--approve); font-weight: 600; }
 .allow { color: var(--allow); }
